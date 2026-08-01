@@ -1,0 +1,90 @@
+ChainTrace Frontend - Runtime and Module Requirements
+======================================================
+
+1. Required runtime
+-------------------
+Node.js >= 22.13.0
+npm >= 10
+
+Go, Python, and a local database are not required to run the frontend.
+
+
+2. Install all frontend modules
+-------------------------------
+Run from the chaintrace-frontend directory:
+
+npm install
+
+The exact module versions are locked by package-lock.json.
+
+
+3. Main runtime modules
+-----------------------
+next==16.2.6
+react==19.2.6
+react-dom==19.2.6
+drizzle-orm==0.45.2
+html2canvas==1.4.1
+jspdf==4.2.1
+
+
+4. Development modules
+----------------------
+@cloudflare/vite-plugin==1.37.1
+@tailwindcss/postcss==4.2.1
+@types/node==22.19.19
+@types/react==19.2.14
+@types/react-dom==19.2.3
+@vitejs/plugin-react==6.0.2
+@vitejs/plugin-rsc==0.5.26
+drizzle-kit==0.31.10
+eslint==9.39.4
+eslint-config-next==16.2.6
+react-server-dom-webpack==19.2.6
+tailwindcss==4.2.1
+typescript==5.9.3
+vinext==0.0.50
+vite==8.0.13
+wrangler==4.92.0
+
+
+5. Start the frontend in development mode
+-----------------------------------------
+npm run dev
+
+Default local URL:
+http://localhost:3000
+
+
+6. Production build and local start
+-----------------------------------
+npm run build
+npm run start
+
+
+7. Optional backend connection
+------------------------------
+The frontend can start without the Go backend.
+
+To enable the real AI Agent chat connection, configure:
+
+CHAINTRACE_BACKEND_URL=http://localhost:<GO_BACKEND_PORT>
+
+The Go backend must implement:
+
+POST /api/v1/agent/chat
+
+Without CHAINTRACE_BACKEND_URL, the chat middle API intentionally returns
+HTTP 503 and does not generate mock model responses.
+
+
+8. Middle API routes provided by the frontend
+---------------------------------------------
+POST /api/middle/agent/chat
+GET  /api/middle/risk-score
+GET  /api/middle/investigation-metrics
+GET  /api/middle/transaction-graph
+POST /api/middle/anomaly-analysis
+
+Detailed request and response contracts:
+middle/README.md
