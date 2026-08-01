@@ -663,7 +663,8 @@ export function useChainTrace() {
     setGraphSpread(1);
     resetGraphView();
     try {
-      const graph = await getTransactionGraph(address, active.network);
+      const network = "Ethereum";
+      const graph = await getTransactionGraph(address, network);
       const layeredGraph = {
         ...graph,
         nodes: graph.nodes.map((node) => ({ ...node, group: 0 })),
@@ -682,6 +683,7 @@ export function useChainTrace() {
             ? {
                 ...item,
                 address,
+                network,
                 relatedNodes: Math.max(0, graph.nodes.length - 1),
                 transactionCount: graph.transactionCount,
                 totalFlow: graph.totalFlow,
@@ -697,7 +699,7 @@ export function useChainTrace() {
         const analysis = await requestAnomalyAnalysis({
           sessionId: active.id,
           address,
-          network: active.network,
+          network,
           graph: {
             nodes: layeredGraph.nodes,
             edges: layeredGraph.edges,

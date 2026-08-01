@@ -44,14 +44,18 @@ async function fetchFromChainTraceBackend(
   const backendUrl = process.env.CHAINTRACE_BACKEND_URL?.replace(/\/$/, "");
   if (!backendUrl) return null;
   const params = new URLSearchParams({ address, network });
-  const response = await fetch(
-    `${backendUrl}/api/v1/transaction-graph?${params}`,
-    { headers: { Accept: "application/json" } },
-  );
-  if (!response.ok) {
-    throw new Error(`ChainTrace backend returned ${response.status}`);
+  try {
+    const response = await fetch(
+      `${backendUrl}/api/v1/transaction-graph?${params}`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!response.ok) return null;
+    return (await response.json()) as TransactionGraphResponse;
+  } catch {
+    // The teammate backend does not expose this endpoint yet. Keep the
+    // frontend usable by falling back to the public Ethereum data source.
+    return null;
   }
-  return (await response.json()) as TransactionGraphResponse;
 }
 
 async function fetchEthereumFromBlockscout(
