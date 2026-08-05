@@ -122,7 +122,7 @@ function mergeTransactionGraphs(
 
 export function useChainTrace() {
   const [investigations, setInvestigations] = useState(initialInvestigations);
-  const [activeId, setActiveId] = useState("CT-2041");
+  const [activeId, setActiveId] = useState("");
   const [query, setQuery] = useState("");
   const [addressDraft, setAddressDraft] = useState(
     initialInvestigations[0]?.address || "",
@@ -130,13 +130,13 @@ export function useChainTrace() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [search, setSearch] = useState("");
   const [isRunning, setIsRunning] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
-  const [isAnalysisCollapsed, setIsAnalysisCollapsed] = useState(true);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isAnalysisCollapsed, setIsAnalysisCollapsed] = useState(false);
   const [isSidebarHovered, setIsSidebarHovered] = useState(false);
   const [isAnalysisHovered, setIsAnalysisHovered] = useState(false);
   const [isSidebarClosing, setIsSidebarClosing] = useState(false);
   const [isAnalysisClosing, setIsAnalysisClosing] = useState(false);
-  const [isLightMode, setIsLightMode] = useState(false);
+  const [isLightMode, setIsLightMode] = useState(true);
   const [graphZoom, setGraphZoom] = useState(1);
   const [graphSpread, setGraphSpread] = useState(1);
   const [graphOffset, setGraphOffset] = useState({ x: 0, y: 0 });
@@ -198,7 +198,20 @@ export function useChainTrace() {
   const hasLoadedInvestigationData = useRef(false);
 
   const active =
-    investigations.find((item) => item.id === activeId) || investigations[0];
+    investigations.find((item) => item.id === activeId) ||
+    investigations[0] ||
+    ({
+      id: "",
+      title: "尚未建立調查",
+      address: "",
+      network: "Ethereum",
+      risk: 0,
+      relatedNodes: 0,
+      totalFlow: 0,
+      flowAsset: "",
+      transactionCount: 0,
+      status: "待處理",
+    } as Investigation);
   const filtered = useMemo(
     () =>
       investigations.filter((item) =>
@@ -220,7 +233,8 @@ export function useChainTrace() {
   }, []);
 
   useEffect(() => {
-    setIsLightMode(window.localStorage.getItem("chaintrace-theme") === "light");
+    const savedTheme = window.localStorage.getItem("chaintrace-theme");
+    setIsLightMode(savedTheme !== "dark");
     const storedSidebarCollapsed = window.localStorage.getItem(
       "chaintrace-sidebar-collapsed",
     );
@@ -897,10 +911,11 @@ export function useChainTrace() {
   }
 
   function createInvestigation() {
-    const id = `CT-${2042 + investigations.length}`;
+    const sequence = investigations.length + 1;
+    const id = `CT-${String(sequence).padStart(4, "0")}`;
     const item: Investigation = {
       id,
-      title: `新調查任務 #${id.slice(3)}`,
+      title: `新調查任務 #${sequence}`,
       address: "",
       network: "Ethereum",
       risk: 0,

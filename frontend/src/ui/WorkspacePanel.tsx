@@ -17,9 +17,7 @@ export function WorkspacePanel({ ui }: { ui: ChainTraceController }) {
           aria-expanded={!ui.isSidebarCollapsed}
           onClick={ui.toggleSidebarPin}
         >
-          <span />
-          <span />
-          <span />
+          <span className="panel-toggle-glyph panel-toggle-left" />
         </button>
         <div>
           <span className="eyebrow">CHAINTRACE</span>
@@ -30,8 +28,26 @@ export function WorkspacePanel({ ui }: { ui: ChainTraceController }) {
           aria-label="新增調查任務"
           onClick={ui.createInvestigation}
         >
-          ＋
+          <span className="plus-glyph" aria-hidden="true" />
         </button>
+      </div>
+
+      <div className="collapsed-sidebar-tools" aria-label="調查工作區快捷操作">
+        <button
+          className="rail-icon-button rail-search-icon"
+          aria-label="展開並搜尋調查"
+          onClick={ui.toggleSidebarPin}
+        />
+        <button
+          className="rail-icon-button rail-folder-icon"
+          aria-label="展開調查工作區"
+          onClick={ui.toggleSidebarPin}
+        />
+        <button
+          className="rail-icon-button rail-add-icon"
+          aria-label="新增調查任務"
+          onClick={ui.createInvestigation}
+        />
       </div>
 
       <label className="search-box">
@@ -51,6 +67,13 @@ export function WorkspacePanel({ ui }: { ui: ChainTraceController }) {
       </div>
 
       <nav className="investigation-list" aria-label="調查任務">
+        {ui.filtered.length === 0 && (
+          <div className="workspace-empty">
+            <span className="empty-folder-icon" aria-hidden="true" />
+            <strong>尚無調查案例</strong>
+            <small>按右上角新增第一個調查</small>
+          </div>
+        )}
         {ui.filtered.map((item) => (
           <button
             key={item.id}

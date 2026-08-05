@@ -4,7 +4,11 @@ import type { ChainTraceController } from "@/src/hooks/useChainTrace";
 
 export function AgentPanel({ ui }: { ui: ChainTraceController }) {
   return (
-    <section className="agent-panel">
+    <section
+      className={`agent-panel ${
+        ui.investigations.length === 0 ? "has-no-investigations" : ""
+      }`}
+    >
       <header className="topbar">
         <div>
           <div className="breadcrumb">
@@ -25,14 +29,21 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
           >
             <span>{ui.isLightMode ? "☾" : "☀"}</span>
           </button>
-          <span className="live-badge">
-            <i />
-            即時監控
-          </span>
         </div>
       </header>
 
       <div className="agent-content">
+        {ui.investigations.length === 0 && (
+          <section className="empty-investigation-state">
+            <span className="empty-investigation-mark" aria-hidden="true" />
+            <h3>建立你的第一個調查</h3>
+            <p>新增案例後，即可輸入錢包地址並開始建立交易圖譜。</p>
+            <button type="button" onClick={ui.createInvestigation}>
+              <span className="plus-glyph" aria-hidden="true" />
+              新增調查
+            </button>
+          </section>
+        )}
         <div className="case-summary">
           <form
             className="address-block address-entry"
@@ -41,7 +52,9 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
               void ui.confirmInvestigationAddress();
             }}
           >
-            <span className="network-icon">Ξ</span>
+            <span className="network-icon" aria-hidden="true">
+              <span className="wallet-glyph" />
+            </span>
             <div>
               <label htmlFor="investigation-address">調查目標</label>
               <input

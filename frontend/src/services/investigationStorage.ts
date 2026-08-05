@@ -6,7 +6,7 @@ import type {
 } from "@/src/models/chaintraceTypes";
 
 const STORAGE_KEY = "chaintrace-investigation-workspace";
-const STORAGE_VERSION = 1;
+const STORAGE_VERSION = 2;
 
 export type PersistedInvestigationSession = {
   addressDraft: string;

@@ -463,7 +463,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
             aria-expanded={!ui.isAnalysisCollapsed}
             onClick={ui.toggleAnalysisPin}
           >
-            {ui.isAnalysisCollapsed ? "←" : "→"}
+            <span className="panel-toggle-glyph panel-toggle-right" />
           </button>
         </div>
       </header>
