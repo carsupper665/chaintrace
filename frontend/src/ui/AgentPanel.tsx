@@ -83,10 +83,6 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
           >
             <span>{ui.isLightMode ? "☾" : "☀"}</span>
           </button>
-          <span className="live-badge">
-            <i />
-            TRON mainnet
-          </span>
         </div>
       </header>
 
@@ -99,7 +95,9 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
               void ui.confirmInvestigationAddress();
             }}
           >
-            <span className="network-icon">T</span>
+            <span className="network-icon" aria-hidden="true">
+              <span className="wallet-glyph" />
+            </span>
             <div>
               <label htmlFor="investigation-address">調查目標</label>
               <input

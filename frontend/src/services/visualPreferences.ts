@@ -24,7 +24,9 @@ export function loadVisualPreferences(storage: ReadableStorage) {
   const analysisCollapsed = storage.getItem("chaintrace-analysis-collapsed");
 
   return {
-    isLightMode: storage.getItem("chaintrace-theme") === "light",
+    // Light is the default look; dark is an opt-in skin. Read it as "not dark"
+    // rather than "is light" so a first visit with nothing stored lands on light.
+    isLightMode: storage.getItem("chaintrace-theme") !== "dark",
     isSidebarCollapsed:
       sidebarCollapsed === null ? null : sidebarCollapsed === "true",
     isAnalysisCollapsed:

@@ -45,9 +45,7 @@ export function WorkspacePanel({
           aria-expanded={!ui.isSidebarCollapsed}
           onClick={ui.toggleSidebarPin}
         >
-          <span />
-          <span />
-          <span />
+          <span className="panel-toggle-glyph panel-toggle-left" />
         </button>
         <div>
           <span className="eyebrow">CHAINTRACE</span>
@@ -59,8 +57,26 @@ export function WorkspacePanel({
           onClick={() => void ui.createInvestigation()}
           disabled={ui.isWorkspaceMutating}
         >
-          ＋
+          <span className="plus-glyph" aria-hidden="true" />
         </button>
+      </div>
+
+      <div className="collapsed-sidebar-tools" aria-label="調查工作區快捷操作">
+        <button
+          className="rail-icon-button rail-search-icon"
+          aria-label="展開並搜尋調查"
+          onClick={ui.toggleSidebarPin}
+        />
+        <button
+          className="rail-icon-button rail-folder-icon"
+          aria-label="展開調查工作區"
+          onClick={ui.toggleSidebarPin}
+        />
+        <button
+          className="rail-icon-button rail-add-icon"
+          aria-label="新增調查任務"
+          onClick={() => void ui.createInvestigation()}
+        />
       </div>
 
       <label className="search-box">
@@ -90,15 +106,16 @@ export function WorkspacePanel({
 
       <nav className="investigation-list" aria-label="調查任務">
         {!ui.isWorkspaceLoading && ui.filtered.length === 0 && (
-          <div className="investigation-empty-state">
+          <div className="workspace-empty">
+            <span className="empty-folder-icon" aria-hidden="true" />
             <strong>
-              {ui.search ? "找不到符合的調查" : "尚無調查紀錄"}
+              {ui.search ? "找不到符合的調查" : "尚無調查案例"}
             </strong>
-            <span>
+            <small>
               {ui.search
                 ? "請調整標題或 TRON 地址關鍵字。"
-                : "新增第一筆調查，紀錄會由後端保存。"}
-            </span>
+                : "按右上角新增第一個調查，紀錄會由後端保存。"}
+            </small>
           </div>
         )}
         {ui.filtered.map((item) => (

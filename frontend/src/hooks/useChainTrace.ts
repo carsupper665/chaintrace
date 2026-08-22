@@ -63,13 +63,13 @@ export function useChainTrace() {
   const [workspaceError, setWorkspaceError] = useState("");
   const [targetMessage, setTargetMessage] = useState("");
   const [isRunning, setIsRunning] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
-  const [isAnalysisCollapsed, setIsAnalysisCollapsed] = useState(true);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isAnalysisCollapsed, setIsAnalysisCollapsed] = useState(false);
   const [isSidebarHovered, setIsSidebarHovered] = useState(false);
   const [isAnalysisHovered, setIsAnalysisHovered] = useState(false);
   const [isSidebarClosing, setIsSidebarClosing] = useState(false);
   const [isAnalysisClosing, setIsAnalysisClosing] = useState(false);
-  const [isLightMode, setIsLightMode] = useState(false);
+  const [isLightMode, setIsLightMode] = useState(true);
   const [isVisualPreferencesHydrated, setIsVisualPreferencesHydrated] =
     useState(false);
   const [graphZoom, setGraphZoom] = useState(1);
@@ -157,7 +157,9 @@ export function useChainTrace() {
   const exportInProgress = useRef(false);
 
   const active =
-    investigations.find((item) => item.id === activeId) || investigations[0];
+    investigations.find((item) => item.id === activeId) ||
+    investigations[0] ||
+    null;
   const filtered = useMemo(
     () => filterInvestigations(investigations, search),
     [investigations, search],
