@@ -33,12 +33,7 @@ export function CaseDialogs({ ui }: { ui: ChainTraceController }) {
           <button
             className="danger-action"
             role="menuitem"
-            disabled={ui.investigations.length === 1}
-            title={
-              ui.investigations.length === 1
-                ? "工作區至少需要保留一個案例"
-                : "刪除此案例"
-            }
+            title="刪除此案例"
             onClick={() => {
               const item = ui.investigations.find(
                 (candidate) => candidate.id === ui.contextMenu?.id,
@@ -93,8 +88,12 @@ export function CaseDialogs({ ui }: { ui: ChainTraceController }) {
                 >
                   取消
                 </button>
-                <button className="primary-button" type="submit">
-                  儲存名稱
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={ui.isWorkspaceMutating}
+                >
+                  {ui.isWorkspaceMutating ? "儲存中…" : "儲存名稱"}
                 </button>
               </div>
             </form>
@@ -130,8 +129,12 @@ export function CaseDialogs({ ui }: { ui: ChainTraceController }) {
               >
                 保留案例
               </button>
-              <button className="delete-button" onClick={ui.deleteInvestigation}>
-                確認刪除
+              <button
+                className="delete-button"
+                onClick={() => void ui.deleteInvestigation()}
+                disabled={ui.isWorkspaceMutating}
+              >
+                {ui.isWorkspaceMutating ? "刪除中…" : "確認刪除"}
               </button>
             </div>
           </section>

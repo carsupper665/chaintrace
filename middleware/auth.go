@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"chaintrace/auth"
+	"chaintrace/model"
 	"chaintrace/utils"
 	"net/http"
 	"strings"
@@ -12,31 +13,37 @@ import (
 func ValidateJWT() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.Request.Header.Get("Authorization")
-
-		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "Authorization header is empty"})
+		parts := strings.Fields(authHeader)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
+			abortUnauthorized(c)
 			return
 		}
-		token := strings.TrimPrefix(authHeader, "Bearer ")
+		token := parts[1]
 
-		if token == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "Token is required"})
-			return
-		}
-
-		if ok := auth.RTS.IsRevoked(token); !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "Token is revoked"})
+		if auth.RTS == nil || auth.RTS.IsRevoked(token) {
+			abortUnauthorized(c)
 			return
 		}
 
 		ip := c.ClientIP()
 		userID, err := auth.VerifyJWT(token, ip)
 		if err != nil {
-			utils.SysLog.Errorf("Token verification error: %v, ReqId: %s", err, c.Request.Header.Get("X-Request-Id"))
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "Token is invalid"})
+			if utils.SysLog != nil {
+				utils.SysLog.Errorf("Token verification error: %v, ReqId: %s", err, c.GetString(utils.RequestIdKey))
+			}
+			abortUnauthorized(c)
+			return
+		}
+		if _, err := model.GetUserByID(userID); err != nil {
+			abortUnauthorized(c)
 			return
 		}
 		c.Set("user_id", userID)
+		c.Set("auth_token", token)
 		c.Next()
 	}
+}
+
+func abortUnauthorized(c *gin.Context) {
+	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": "unauthorized", "message": "Unauthorized"})
 }

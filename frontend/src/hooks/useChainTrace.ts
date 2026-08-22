@@ -1,28 +1,39 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ConversationClientError } from "@/src/middle/conversation-client";
 import {
-  AgentChatClientError,
-  sendAgentMessage,
-} from "@/src/middle/agent-chat-client";
-import { getInvestigationMetrics } from "@/src/middle/investigation-metrics-client";
-import { getRiskScore } from "@/src/middle/risk-score-client";
+  AnalysisRunClientError,
+  createAnalysisRunner,
+  createInvestigation as createInvestigationRecord,
+  filterInvestigations,
+  getCurrentAnalysisResult,
+  getInvestigation,
+  InvestigationClientError,
+  listInvestigations,
+  mergeCurrentAnalysisResult,
+  reloadStableAnalysis,
+  renameInvestigation as renameInvestigationRecord,
+  setInvestigationTarget,
+} from "@/src/middle/investigation-client";
+import type {
+  AnalysisScope,
+  AnalysisRunProgress,
+  CurrentAnalysisResult,
+} from "@/src/middle/investigation-contract";
 import {
-  AnomalyAnalysisClientError,
-  requestAnomalyAnalysis,
-} from "@/src/middle/anomaly-analysis-client";
-import type { AnomalyAnalysisResponse } from "@/src/middle/anomaly-analysis-contract";
-import {
-  getTransactionGraph,
-  TransactionGraphClientError,
-} from "@/src/middle/transaction-graph-client";
+  DEFAULT_TRANSFER_LIMIT,
+  DEFAULT_TRAVERSAL_DEPTH,
+} from "@/src/middle/investigation-contract";
 import type { TransactionGraphResponse } from "@/src/middle/transaction-graph-contract";
-import { initialInvestigations } from "@/src/models/chaintraceData";
-import { downloadAnalysisPdf } from "@/src/services/downloadAnalysisPdf";
+import { TransactionGraphClientError } from "@/src/middle/transaction-graph-client";
 import {
-  loadInvestigationWorkspace,
-  saveInvestigationWorkspace,
-} from "@/src/services/investigationStorage";
+  AnalysisExportError,
+  createAnalysisExporter,
+} from "@/src/services/analysisExportBrowser";
+import { createConversationBrowser } from "@/src/services/conversationBrowser";
+import { createTransactionGraphBrowser } from "@/src/services/transactionGraphBrowser";
+import { loadVisualPreferences } from "@/src/services/visualPreferences";
 import type {
   ChatMessage,
   ContextMenuState,
@@ -31,104 +42,26 @@ import type {
 
 type InvestigationSessionState = {
   addressDraft: string;
-  transactionGraph: TransactionGraphResponse | null;
-  selectedNodeId: string | null;
-  expandedNodeIds: Set<string>;
-  graphSpread: number;
-  graphZoom: number;
-  graphOffset: { x: number; y: number };
-  anomalyAnalysis: AnomalyAnalysisResponse | null;
   graphError: string;
   analysisError: string;
-  expansionError: string;
-  chatMessages: ChatMessage[];
   query: string;
 };
 
-function mergeTransactionGraphs(
-  current: TransactionGraphResponse,
-  expansion: TransactionGraphResponse,
-  centerId: string,
-): TransactionGraphResponse {
-  const originalCenter = current.nodes.find((node) => node.id === centerId);
-  if (!originalCenter) return current;
-  const shiftX =
-    originalCenter.x < 28
-      ? 28 - originalCenter.x
-      : originalCenter.x > 72
-        ? 72 - originalCenter.x
-        : 0;
-  const shiftY =
-    originalCenter.y < 28
-      ? 28 - originalCenter.y
-      : originalCenter.y > 72
-        ? 72 - originalCenter.y
-        : 0;
-  const shiftedCurrent = {
-    ...current,
-    nodes: current.nodes.map((node) => ({
-      ...node,
-      x: Math.min(96, Math.max(4, node.x + shiftX)),
-      y: Math.min(96, Math.max(4, node.y + shiftY)),
-    })),
-  };
-  const center = shiftedCurrent.nodes.find((node) => node.id === centerId)!;
-  const nextGroup =
-    Math.max(0, ...shiftedCurrent.nodes.map((node) => node.group ?? 0)) + 1;
-  const existingIds = new Set(shiftedCurrent.nodes.map((node) => node.id));
-  const candidates = expansion.nodes.filter(
-    (node) => node.id !== centerId && !existingIds.has(node.id),
-  );
-  const positionedNodes = candidates.map((node, index) => {
-    const angle =
-      (index / Math.max(candidates.length, 1)) * Math.PI * 2 - Math.PI / 2;
-    const seed = [...node.id].reduce(
-      (total, character) => total + character.charCodeAt(0),
-      0,
-    );
-    const radius = 15 + (seed % 20);
-    return {
-      ...node,
-      group: nextGroup,
-      type: node.type === "focus" ? ("normal" as const) : node.type,
-      x: Math.min(94, Math.max(6, center.x + Math.cos(angle) * radius)),
-      y: Math.min(94, Math.max(6, center.y + Math.sin(angle) * radius)),
-    };
-  });
-  const nodes = [...shiftedCurrent.nodes, ...positionedNodes];
-  const visibleIds = new Set(nodes.map((node) => node.id));
-  const edgeIds = new Set(shiftedCurrent.edges.map((edge) => edge.id));
-  const edges = [
-    ...shiftedCurrent.edges,
-    ...expansion.edges
-      .filter(
-        (edge) =>
-          !edgeIds.has(edge.id) &&
-          visibleIds.has(edge.from) &&
-          visibleIds.has(edge.to),
-      )
-      .map((edge) => ({ ...edge, group: nextGroup })),
-  ];
-  return {
-    ...shiftedCurrent,
-    nodes,
-    edges,
-    transactionCount: edges.length,
-    totalFlow: edges.reduce((sum, edge) => sum + edge.value, 0),
-    source: `${current.source}+expanded`,
-    updatedAt: new Date().toISOString(),
-  };
-}
-
 export function useChainTrace() {
-  const [investigations, setInvestigations] = useState(initialInvestigations);
-  const [activeId, setActiveId] = useState("CT-2041");
+  const [investigations, setInvestigations] = useState<Investigation[]>([]);
+  const [activeId, setActiveId] = useState("");
   const [query, setQuery] = useState("");
-  const [addressDraft, setAddressDraft] = useState(
-    initialInvestigations[0]?.address || "",
-  );
+  const [addressDraft, setAddressDraft] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [conversationError, setConversationError] = useState("");
+  const [hasMoreConversation, setHasMoreConversation] = useState(false);
+  const [isConversationLoading, setIsConversationLoading] = useState(false);
+  const [conversationReloadToken, setConversationReloadToken] = useState(0);
   const [search, setSearch] = useState("");
+  const [isWorkspaceLoading, setIsWorkspaceLoading] = useState(true);
+  const [isWorkspaceMutating, setIsWorkspaceMutating] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState("");
+  const [targetMessage, setTargetMessage] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
   const [isAnalysisCollapsed, setIsAnalysisCollapsed] = useState(true);
@@ -137,6 +70,8 @@ export function useChainTrace() {
   const [isSidebarClosing, setIsSidebarClosing] = useState(false);
   const [isAnalysisClosing, setIsAnalysisClosing] = useState(false);
   const [isLightMode, setIsLightMode] = useState(false);
+  const [isVisualPreferencesHydrated, setIsVisualPreferencesHydrated] =
+    useState(false);
   const [graphZoom, setGraphZoom] = useState(1);
   const [graphSpread, setGraphSpread] = useState(1);
   const [graphOffset, setGraphOffset] = useState({ x: 0, y: 0 });
@@ -148,12 +83,32 @@ export function useChainTrace() {
     "sidebar" | "analysis" | null
   >(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isExportingCsv, setIsExportingCsv] = useState(false);
+  const [exportError, setExportError] = useState("");
   const [isGraphLoading, setIsGraphLoading] = useState(false);
   const [graphError, setGraphError] = useState("");
+  const [isGraphPageLoading, setIsGraphPageLoading] = useState(false);
+  const [graphPageError, setGraphPageError] = useState("");
+  const [graphReloadToken, setGraphReloadToken] = useState(0);
   const [isAnalysisLoading, setIsAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
-  const [anomalyAnalysis, setAnomalyAnalysis] =
-    useState<AnomalyAnalysisResponse | null>(null);
+  const [analysisRun, setAnalysisRun] = useState<AnalysisRunProgress | null>(
+    null,
+  );
+  const [analysisOutcome, setAnalysisOutcome] = useState<
+    "cancelled" | "failed" | "run_lost" | null
+  >(null);
+  const [isAnalysisCancelling, setIsAnalysisCancelling] = useState(false);
+  const [analysisScope, setAnalysisScope] = useState<AnalysisScope>({
+    transferLimit: DEFAULT_TRANSFER_LIMIT,
+    traversalDepth: DEFAULT_TRAVERSAL_DEPTH,
+  });
+  const [currentAnalysisResult, setCurrentAnalysisResult] =
+    useState<CurrentAnalysisResult | null>(null);
+  const [analysisRunner] = useState(() => createAnalysisRunner());
+  const [analysisExporter] = useState(() => createAnalysisExporter());
+  const [conversationBrowser] = useState(() => createConversationBrowser());
+  const [graphBrowser] = useState(() => createTransactionGraphBrowser());
   const [transactionGraph, setTransactionGraph] =
     useState<TransactionGraphResponse | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -167,7 +122,6 @@ export function useChainTrace() {
   const [renameTarget, setRenameTarget] = useState<Investigation | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Investigation | null>(null);
-  const [isStorageHydrated, setIsStorageHydrated] = useState(false);
 
   const graphCanvasRef = useRef<HTMLDivElement | null>(null);
   const graphCardRef = useRef<HTMLElement | null>(null);
@@ -195,17 +149,17 @@ export function useChainTrace() {
   const investigationSessions = useRef(
     new Map<string, InvestigationSessionState>(),
   );
-  const hasLoadedInvestigationData = useRef(false);
+  const loadedAnalysisResult = useRef("");
+  const currentGraphDataset = useRef("");
+  const analysisAttempt = useRef(0);
+  const conversationAttempt = useRef(0);
+  const selectAttempt = useRef(0);
+  const exportInProgress = useRef(false);
 
   const active =
     investigations.find((item) => item.id === activeId) || investigations[0];
   const filtered = useMemo(
-    () =>
-      investigations.filter((item) =>
-        `${item.title} ${item.address}`
-          .toLowerCase()
-          .includes(search.toLowerCase()),
-      ),
+    () => filterInvestigations(investigations, search),
     [investigations, search],
   );
 
@@ -220,125 +174,244 @@ export function useChainTrace() {
   }, []);
 
   useEffect(() => {
-    setIsLightMode(window.localStorage.getItem("chaintrace-theme") === "light");
-    const storedSidebarCollapsed = window.localStorage.getItem(
-      "chaintrace-sidebar-collapsed",
-    );
-    const storedAnalysisCollapsed = window.localStorage.getItem(
-      "chaintrace-analysis-collapsed",
-    );
-    if (storedSidebarCollapsed !== null) {
-      setIsSidebarCollapsed(storedSidebarCollapsed === "true");
-    }
-    if (storedAnalysisCollapsed !== null) {
-      setIsAnalysisCollapsed(storedAnalysisCollapsed === "true");
-    }
-    setSidebarWidth(
-      Number(window.localStorage.getItem("chaintrace-sidebar-width")) || 280,
-    );
-    setAnalysisWidth(
-      Number(window.localStorage.getItem("chaintrace-analysis-width")) || 420,
-    );
-
-    const snapshot = loadInvestigationWorkspace();
-    if (snapshot) {
-      const restoredActiveId = snapshot.investigations.some(
-        (item) => item.id === snapshot.activeId,
-      )
-        ? snapshot.activeId
-        : snapshot.investigations[0].id;
-      const restoredSessions = new Map<string, InvestigationSessionState>();
-      for (const [id, session] of Object.entries(snapshot.sessions)) {
-        restoredSessions.set(id, {
-          ...session,
-          expandedNodeIds: new Set(session.expandedNodeIds || []),
-          chatMessages: Array.isArray(session.chatMessages)
-            ? session.chatMessages
-            : [],
-          query: session.query || "",
-        });
+    const preferences = loadVisualPreferences(window.localStorage);
+    let cancelled = false;
+    window.queueMicrotask(() => {
+      if (cancelled) return;
+      setIsLightMode(preferences.isLightMode);
+      if (preferences.isSidebarCollapsed !== null) {
+        setIsSidebarCollapsed(preferences.isSidebarCollapsed);
       }
-      investigationSessions.current = restoredSessions;
-      const activeSession = restoredSessions.get(restoredActiveId);
-      const activeInvestigation = snapshot.investigations.find(
-        (item) => item.id === restoredActiveId,
-      );
-
-      setInvestigations(snapshot.investigations);
-      setActiveId(restoredActiveId);
-      setAddressDraft(
-        activeSession?.addressDraft ?? activeInvestigation?.address ?? "",
-      );
-      setTransactionGraph(activeSession?.transactionGraph ?? null);
-      setSelectedNodeId(activeSession?.selectedNodeId ?? null);
-      setExpandedNodeIds(
-        new Set(activeSession?.expandedNodeIds || []),
-      );
-      setGraphSpread(activeSession?.graphSpread ?? 1);
-      setGraphZoom(activeSession?.graphZoom ?? 1);
-      setGraphOffset(activeSession?.graphOffset ?? { x: 0, y: 0 });
-      setAnomalyAnalysis(activeSession?.anomalyAnalysis ?? null);
-      setGraphError(activeSession?.graphError ?? "");
-      setAnalysisError(activeSession?.analysisError ?? "");
-      setExpansionError(activeSession?.expansionError ?? "");
-      setChatMessages(activeSession?.chatMessages ?? []);
-      setQuery(activeSession?.query ?? "");
-    }
-    setIsStorageHydrated(true);
+      if (preferences.isAnalysisCollapsed !== null) {
+        setIsAnalysisCollapsed(preferences.isAnalysisCollapsed);
+      }
+      setSidebarWidth(preferences.sidebarWidth);
+      setAnalysisWidth(preferences.analysisWidth);
+      setGraphZoom(preferences.graphZoom);
+      setGraphSpread(preferences.graphSpread);
+      setGraphOffset(preferences.graphOffset);
+      setIsVisualPreferencesHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    if (!isStorageHydrated) return;
-    const timeout = window.setTimeout(() => {
-      const sessions = new Map(investigationSessions.current);
-      sessions.set(activeId, {
-        addressDraft,
-        transactionGraph,
-        selectedNodeId,
-        expandedNodeIds: new Set(expandedNodeIds),
-        graphSpread,
-        graphZoom,
-        graphOffset,
-        anomalyAnalysis,
-        graphError,
-        analysisError,
-        expansionError,
-        chatMessages,
-        query,
+    if (!isVisualPreferencesHydrated) return;
+    window.localStorage.setItem("chaintrace-graph-zoom", String(graphZoom));
+    window.localStorage.setItem("chaintrace-graph-spread", String(graphSpread));
+    window.localStorage.setItem(
+      "chaintrace-graph-offset-x",
+      String(graphOffset.x),
+    );
+    window.localStorage.setItem(
+      "chaintrace-graph-offset-y",
+      String(graphOffset.y),
+    );
+  }, [graphOffset, graphSpread, graphZoom, isVisualPreferencesHydrated]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadWorkspace() {
+      setIsWorkspaceLoading(true);
+      setWorkspaceError("");
+      try {
+        const records = await listInvestigations();
+        if (cancelled) return;
+        const selected = records[0];
+        setInvestigations(records);
+        setActiveId(selected?.id || "");
+        setAddressDraft(selected?.address || "");
+      } catch (error) {
+        if (cancelled) return;
+        setWorkspaceError(
+          error instanceof InvestigationClientError
+            ? error.message
+            : "無法載入調查工作區，請稍後再試。",
+        );
+      } finally {
+        if (!cancelled) setIsWorkspaceLoading(false);
+      }
+    }
+    void loadWorkspace();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => () => analysisRunner.stop(), [analysisRunner]);
+
+  useEffect(() => {
+    const investigationId = active?.id;
+    let cancelled = false;
+
+    if (!investigationId) {
+      conversationBrowser.clear();
+      window.queueMicrotask(() => {
+        if (cancelled) return;
+        setChatMessages([]);
+        setConversationError("");
+        setHasMoreConversation(false);
+        setIsConversationLoading(false);
       });
-      investigationSessions.current = sessions;
-      saveInvestigationWorkspace({
-        activeId,
-        investigations,
-        sessions: Object.fromEntries(
-          [...sessions.entries()].map(([id, session]) => [
-            id,
-            {
-              ...session,
-              expandedNodeIds: [...session.expandedNodeIds],
-            },
-          ]),
-        ),
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    window.queueMicrotask(() => {
+      if (cancelled) return;
+      setChatMessages([]);
+      setConversationError("");
+      setHasMoreConversation(false);
+      setIsConversationLoading(true);
+    });
+    void conversationBrowser
+      .load(investigationId)
+      .then((conversation) => {
+        if (cancelled) return;
+        setChatMessages(conversation.messages);
+        setHasMoreConversation(Boolean(conversation.nextCursor));
+      })
+      .catch((error) => {
+        if (
+          cancelled ||
+          (error instanceof DOMException && error.name === "AbortError")
+        ) {
+          return;
+        }
+        setConversationError(
+          error instanceof ConversationClientError
+            ? error.message
+            : "無法載入已保存的對話，請稍後再試。",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setIsConversationLoading(false);
       });
-    }, 250);
-    return () => window.clearTimeout(timeout);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [active?.id, conversationBrowser, conversationReloadToken]);
+
+  useEffect(() => () => conversationBrowser.clear(), [conversationBrowser]);
+
+  useEffect(() => {
+    const investigationId = active?.id;
+    const resultId = active?.currentResult;
+    const key = investigationId && resultId ? `${investigationId}:${resultId}` : "";
+    let cancelled = false;
+    const controller = new AbortController();
+
+    if (!key) {
+      window.queueMicrotask(() => {
+        if (cancelled) return;
+        loadedAnalysisResult.current = "";
+        setCurrentAnalysisResult(null);
+      });
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    }
+    if (loadedAnalysisResult.current === key) {
+      return () => controller.abort();
+    }
+
+    window.queueMicrotask(() => {
+      if (!cancelled) setIsAnalysisLoading(true);
+    });
+    void getCurrentAnalysisResult(investigationId, fetch, controller.signal)
+      .then((result) => {
+        if (cancelled) return;
+        loadedAnalysisResult.current = key;
+        setCurrentAnalysisResult(result);
+        setAnalysisError("");
+      })
+      .catch((error) => {
+        if (
+          cancelled ||
+          (error instanceof DOMException && error.name === "AbortError")
+        ) {
+          return;
+        }
+        setAnalysisError(
+          error instanceof InvestigationClientError
+            ? error.message
+            : "無法載入目前分析結果，請稍後再試。",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setIsAnalysisLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [active?.currentResult, active?.id]);
+
+  useEffect(() => {
+    const investigationId = active?.id;
+    const address = active?.address;
+    const network = active?.network;
+    const result = currentAnalysisResult;
+    let cancelled = false;
+
+    currentGraphDataset.current = result?.dataset.id ?? "";
+    graphBrowser.clear();
+    graphHistory.current = [];
+    window.queueMicrotask(() => {
+      if (cancelled) return;
+      setTransactionGraph(null);
+      setSelectedNodeId(null);
+      setExpandedNodeIds(new Set());
+      setGraphHistoryDepth(0);
+      setGraphSpread(1);
+      setGraphZoom(1);
+      setGraphOffset({ x: 0, y: 0 });
+      setExpansionError("");
+      setGraphPageError("");
+      setIsGraphPageLoading(Boolean(investigationId && address && result));
+    });
+
+    if (!investigationId || !address || !network || !result) {
+      return () => {
+        cancelled = true;
+        graphBrowser.clear();
+      };
+    }
+
+    void graphBrowser
+      .load({ investigationId, address, network, result })
+      .then((graph) => {
+        if (cancelled || graph?.datasetId !== result.dataset.id) return;
+        setTransactionGraph(graph);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setGraphPageError(
+          error instanceof TransactionGraphClientError
+            ? error.message
+            : "無法載入交易圖譜，請稍後再試。",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setIsGraphPageLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      graphBrowser.clear();
+    };
   }, [
-    activeId,
-    addressDraft,
-    analysisError,
-    anomalyAnalysis,
-    chatMessages,
-    expandedNodeIds,
-    expansionError,
-    graphError,
-    graphOffset,
-    graphSpread,
-    graphZoom,
-    investigations,
-    isStorageHydrated,
-    query,
-    selectedNodeId,
-    transactionGraph,
+    active?.address,
+    active?.id,
+    active?.network,
+    currentAnalysisResult,
+    graphBrowser,
+    graphReloadToken,
   ]);
 
   useEffect(() => {
@@ -362,55 +435,7 @@ export function useChainTrace() {
     };
     canvas.addEventListener("wheel", handleGraphWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", handleGraphWheel);
-  }, []);
-
-  useEffect(() => {
-    if (!isStorageHydrated || hasLoadedInvestigationData.current) return;
-    hasLoadedInvestigationData.current = true;
-    let cancelled = false;
-    async function loadInvestigationData() {
-      const results = await Promise.all(
-        investigations
-          .filter((item) => item.address)
-          .map(async (item) => ({
-            id: item.id,
-            risk: await getRiskScore({
-              address: item.address,
-              network: item.network,
-            }),
-            metrics: await getInvestigationMetrics({
-              address: item.address,
-              network: item.network,
-            }),
-          })),
-      );
-      if (cancelled) return;
-      setInvestigations((current) =>
-        current.map((item) => {
-          const match = results.find((entry) => entry.id === item.id);
-          if (!match) return item;
-          return {
-            ...item,
-            ...(match.risk.status === "ready"
-              ? { risk: match.risk.score }
-              : {}),
-            ...(match.metrics.status === "ready"
-              ? {
-                  relatedNodes: match.metrics.relatedNodes,
-                  totalFlow: match.metrics.totalFlow,
-                  flowAsset: match.metrics.flowAsset,
-                  transactionCount: match.metrics.transactionCount,
-                }
-              : {}),
-          };
-        }),
-      );
-    }
-    void loadInvestigationData();
-    return () => {
-      cancelled = true;
-    };
-  }, [isStorageHydrated]);
+  }, [active?.id, isGraphFullscreen]);
 
   useEffect(
     () => () => {
@@ -493,22 +518,23 @@ export function useChainTrace() {
   }
 
   function moveGraphNode(nodeId: string, x: number, y: number) {
-    setTransactionGraph((current) =>
-      current
-        ? {
-            ...current,
-            nodes: current.nodes.map((node) =>
-              node.id === nodeId
-                ? {
-                    ...node,
-                    x: Math.min(96, Math.max(4, x)),
-                    y: Math.min(94, Math.max(6, y)),
-                  }
-                : node,
-            ),
-          }
-        : current,
-    );
+    setTransactionGraph((current) => {
+      if (!current) return current;
+      const next = {
+        ...current,
+        nodes: current.nodes.map((node) =>
+          node.id === nodeId
+            ? {
+                ...node,
+                x: Math.min(96, Math.max(4, x)),
+                y: Math.min(94, Math.max(6, y)),
+              }
+            : node,
+        ),
+      };
+      graphBrowser.replaceGraph(next);
+      return next;
+    });
   }
 
   async function toggleGraphFullscreen() {
@@ -644,92 +670,30 @@ export function useChainTrace() {
 
   async function confirmInvestigationAddress() {
     const address = addressDraft.trim();
-    if (isGraphLoading) return;
-    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
-      setGraphError("請輸入有效的 Ethereum 錢包地址");
-      return;
-    }
-
+    if (!active || isGraphLoading) return;
     setGraphError("");
+    setTargetMessage("");
     setAnalysisError("");
-    setAnomalyAnalysis(null);
     setIsGraphLoading(true);
-    setTransactionGraph(null);
-    setSelectedNodeId(null);
-    setExpandedNodeIds(new Set());
-    graphHistory.current = [];
-    setGraphHistoryDepth(0);
-    setExpansionError("");
-    setGraphSpread(1);
-    resetGraphView();
     try {
-      const network = "Ethereum";
-      const graph = await getTransactionGraph(address, network);
-      const layeredGraph = {
-        ...graph,
-        nodes: graph.nodes.map((node) => ({ ...node, group: 0 })),
-        edges: graph.edges.map((edge) => ({ ...edge, group: 0 })),
-      };
-      setTransactionGraph(layeredGraph);
-      setSelectedNodeId(
-        graph.nodes.find((node) => node.type === "focus")?.id ||
-          graph.nodes[0]?.id ||
-          null,
-      );
-      setExpandedNodeIds(new Set([address.toLowerCase()]));
+      const updated = await setInvestigationTarget(active.id, address);
       setInvestigations((current) =>
         current.map((item) =>
-          item.id === activeId
-            ? {
-                ...item,
-                address,
-                network,
-                relatedNodes: Math.max(0, graph.nodes.length - 1),
-                transactionCount: graph.transactionCount,
-                totalFlow: graph.totalFlow,
-                flowAsset: graph.flowAsset,
-                status: "分析中",
-              }
-            : item,
+          item.id === updated.id ? updated : item,
         ),
       );
-
-      setIsAnalysisLoading(true);
-      try {
-        const analysis = await requestAnomalyAnalysis({
-          sessionId: active.id,
-          address,
-          network,
-          graph: {
-            nodes: layeredGraph.nodes,
-            edges: layeredGraph.edges,
-            transactionCount: graph.transactionCount,
-            totalFlow: graph.totalFlow,
-            flowAsset: graph.flowAsset,
-          },
-        });
-        setAnomalyAnalysis(analysis);
-        setInvestigations((current) =>
-          current.map((item) =>
-            item.id === activeId
-              ? { ...item, risk: Math.min(100, Math.max(0, analysis.score)) }
-              : item,
-          ),
-        );
-      } catch (error) {
-        setAnalysisError(
-          error instanceof AnomalyAnalysisClientError
-            ? error.message
-            : "交易資料已取得，但異常分析服務目前無法使用",
-        );
-      } finally {
-        setIsAnalysisLoading(false);
-      }
+      setAddressDraft(updated.address || "");
+      graphBrowser.clear();
+      setTransactionGraph(null);
+      setCurrentAnalysisResult(null);
+      setSelectedNodeId(null);
+      setExpandedNodeIds(new Set());
+      setTargetMessage("TRON 調查目標已儲存，可以開始分析。");
     } catch (error) {
       setGraphError(
-        error instanceof TransactionGraphClientError
+        error instanceof InvestigationClientError
           ? error.message
-          : "實際鏈上資料抓取失敗，請稍後再試",
+          : "無法儲存 TRON 調查目標，請稍後再試。",
       );
     } finally {
       setIsGraphLoading(false);
@@ -737,69 +701,64 @@ export function useChainTrace() {
   }
 
   async function expandGraphNode(nodeId: string) {
-    setSelectedNodeId(nodeId);
-    const currentGraph = transactionGraph;
-    const node = currentGraph?.nodes.find((candidate) => candidate.id === nodeId);
     if (
-      !currentGraph ||
-      !node ||
-      expandedNodeIds.has(nodeId) ||
-      expandingNodeId
+      !transactionGraph ||
+      expandingNodeId ||
+      expandedNodeIds.has(nodeId)
     ) {
       return;
     }
-
-    setExpansionError("");
+    setSelectedNodeId(nodeId);
     setExpandingNodeId(nodeId);
+    setExpansionError("");
+    const previous = transactionGraph;
     try {
-      const expansion = await getTransactionGraph(node.address, active.network);
-      const merged = mergeTransactionGraphs(currentGraph, expansion, nodeId);
+      const expanded = await graphBrowser.expand(nodeId);
+      if (!expanded || expanded.datasetId !== previous.datasetId) return;
       graphHistory.current.push({
-        graph: currentGraph,
+        graph: previous,
         spread: graphSpread,
         offset: graphOffset,
         expandedNodeIds: new Set(expandedNodeIds),
       });
-      setGraphHistoryDepth(graphHistory.current.length);
-      setTransactionGraph(merged);
-      setGraphSpread((current) => {
-        const next = Math.min(6, current + 0.7);
-        const expandedCenter = merged.nodes.find(
-          (candidate) => candidate.id === nodeId,
-        );
-        const canvas = graphCanvasRef.current;
-        if (expandedCenter && canvas) {
-          const rect = canvas.getBoundingClientRect();
-          setGraphOffset({
-            x: ((50 - expandedCenter.x) / 100) * rect.width * next,
-            y: ((50 - expandedCenter.y) / 100) * rect.height * next,
-          });
-        }
-        return next;
-      });
+      setTransactionGraph(expanded);
       setExpandedNodeIds((current) => new Set(current).add(nodeId));
-      setInvestigations((current) =>
-        current.map((item) =>
-          item.id === activeId
-            ? {
-                ...item,
-                relatedNodes: Math.max(0, merged.nodes.length - 1),
-                transactionCount: merged.transactionCount,
-                totalFlow: merged.totalFlow,
-                flowAsset: merged.flowAsset,
-              }
-            : item,
-        ),
-      );
+      setGraphHistoryDepth(graphHistory.current.length);
+      setGraphSpread((current) => Math.min(2.4, current + 0.18));
     } catch (error) {
       setExpansionError(
         error instanceof TransactionGraphClientError
           ? error.message
-          : "無法展開這個節點的鏈上交易",
+          : "無法展開此節點的交易關係，請稍後再試。",
       );
     } finally {
       setExpandingNodeId(null);
     }
+  }
+
+  async function loadMoreGraph() {
+    if (!transactionGraph?.hasMore || isGraphPageLoading) return;
+    const datasetId = transactionGraph.datasetId;
+    setIsGraphPageLoading(true);
+    setGraphPageError("");
+    try {
+      const merged = await graphBrowser.loadMore();
+      if (merged?.datasetId === datasetId) setTransactionGraph(merged);
+    } catch (error) {
+      setGraphPageError(
+        error instanceof TransactionGraphClientError
+          ? error.message
+          : "無法載入更多交易關係，請稍後再試。",
+      );
+    } finally {
+      if (currentGraphDataset.current === datasetId) {
+        setIsGraphPageLoading(false);
+      }
+    }
+  }
+
+  function reloadTransactionGraph() {
+    setGraphReloadToken((current) => current + 1);
   }
 
   function undoGraphExpansion() {
@@ -809,152 +768,239 @@ export function useChainTrace() {
     setGraphSpread(previous.spread);
     setGraphOffset(previous.offset);
     setExpandedNodeIds(previous.expandedNodeIds);
+    graphBrowser.replaceGraph(previous.graph);
     setSelectedNodeId(null);
     setExpansionError("");
     setGraphHistoryDepth(graphHistory.current.length);
-    setInvestigations((current) =>
-      current.map((item) =>
-        item.id === activeId
-          ? {
-              ...item,
-              relatedNodes: Math.max(0, previous.graph.nodes.length - 1),
-              transactionCount: previous.graph.transactionCount,
-              totalFlow: previous.graph.totalFlow,
-              flowAsset: previous.graph.flowAsset,
-            }
-          : item,
-      ),
-    );
   }
 
-  async function exportAnalysisPdf() {
-    if (isExportingPdf || !transactionGraph) return;
-    setIsExportingPdf(true);
-    try {
-      await downloadAnalysisPdf({
-        caseId: active.id,
-        caseTitle: active.title,
+  async function exportAnalysis(format: "csv" | "pdf") {
+    if (
+      exportInProgress.current ||
+      isExportingCsv ||
+      isExportingPdf ||
+      !active?.address ||
+      !active.currentResult ||
+      !currentAnalysisResult
+    ) {
+      return;
+    }
+    exportInProgress.current = true;
+    const input = {
+      investigation: {
+        id: active.id,
+        title: active.title,
         address: active.address,
         network: active.network,
-        graph: transactionGraph,
-        selectedNode:
-          transactionGraph.nodes.find((node) => node.id === selectedNodeId) ||
-          null,
-        anomalyAnalysis,
-      });
+        currentResult: active.currentResult,
+      },
+      result: currentAnalysisResult,
+      graphView: transactionGraph,
+      selectedNodeId,
+    };
+    setExportError("");
+    if (format === "csv") setIsExportingCsv(true);
+    else setIsExportingPdf(true);
+    try {
+      if (format === "csv") await analysisExporter.exportCsv(input);
+      else await analysisExporter.exportPdf(input);
     } catch (error) {
-      console.error("PDF export failed", error);
-      window.alert("PDF 產生失敗，請稍後再試。");
+      setExportError(
+        error instanceof TransactionGraphClientError ||
+          error instanceof AnalysisExportError
+          ? error.message
+          : `${format.toUpperCase()} 產生失敗，未下載任何檔案，請稍後再試。`,
+      );
     } finally {
-      setIsExportingPdf(false);
+      exportInProgress.current = false;
+      if (format === "csv") setIsExportingCsv(false);
+      else setIsExportingPdf(false);
     }
   }
 
-  function selectInvestigation(nextId: string) {
-    if (nextId === activeId) return;
+  function exportTransactionsCsv() {
+    return exportAnalysis("csv");
+  }
 
-    investigationSessions.current.set(activeId, {
-      addressDraft,
-      transactionGraph,
-      selectedNodeId,
-      expandedNodeIds: new Set(expandedNodeIds),
-      graphSpread,
-      graphZoom,
-      graphOffset,
-      anomalyAnalysis,
-      graphError,
-      analysisError,
-      expansionError,
-      chatMessages,
-      query,
-    });
+  function exportAnalysisPdf() {
+    return exportAnalysis("pdf");
+  }
 
-    const nextInvestigation = investigations.find(
-      (item) => item.id === nextId,
-    );
-    const saved = investigationSessions.current.get(nextId);
+  function showInvestigation(nextInvestigation: Investigation) {
+    analysisAttempt.current += 1;
+    conversationAttempt.current += 1;
+    analysisRunner.stop();
+    graphBrowser.clear();
+    loadedAnalysisResult.current = "";
+    const saved = investigationSessions.current.get(nextInvestigation.id);
     graphHistory.current = [];
     setGraphHistoryDepth(0);
-    setActiveId(nextId);
-    setAddressDraft(saved?.addressDraft ?? nextInvestigation?.address ?? "");
-    setTransactionGraph(saved?.transactionGraph ?? null);
-    setSelectedNodeId(saved?.selectedNodeId ?? null);
-    setExpandedNodeIds(
-      saved ? new Set(saved.expandedNodeIds) : new Set(),
-    );
-    setGraphSpread(saved?.graphSpread ?? 1);
-    setGraphZoom(saved?.graphZoom ?? 1);
-    setGraphOffset(saved?.graphOffset ?? { x: 0, y: 0 });
-    setAnomalyAnalysis(saved?.anomalyAnalysis ?? null);
+    setActiveId(nextInvestigation.id);
+    setAddressDraft(saved?.addressDraft ?? nextInvestigation.address ?? "");
+    setTransactionGraph(null);
+    setSelectedNodeId(null);
+    setExpandedNodeIds(new Set());
+    setGraphSpread(1);
+    setGraphZoom(1);
+    setGraphOffset({ x: 0, y: 0 });
+    setCurrentAnalysisResult(null);
+    setAnalysisRun(null);
+    setAnalysisOutcome(null);
+    setIsAnalysisCancelling(false);
     setGraphError(saved?.graphError ?? "");
     setAnalysisError(saved?.analysisError ?? "");
-    setExpansionError(saved?.expansionError ?? "");
-    setChatMessages(saved?.chatMessages ?? []);
+    setExpansionError("");
+    setGraphPageError("");
+    setExportError("");
+    setChatMessages([]);
+    setConversationError("");
+    setHasMoreConversation(false);
+    setIsConversationLoading(true);
+    setIsRunning(false);
+    setConversationReloadToken((current) => current + 1);
     setQuery(saved?.query ?? "");
+    setTargetMessage("");
     setExpandingNodeId(null);
     setIsGraphLoading(false);
     setIsAnalysisLoading(false);
   }
 
-  function createInvestigation() {
-    const id = `CT-${2042 + investigations.length}`;
-    const item: Investigation = {
-      id,
-      title: `新調查任務 #${id.slice(3)}`,
-      address: "",
-      network: "Ethereum",
-      risk: 0,
-      relatedNodes: 0,
-      totalFlow: 0,
-      flowAsset: "",
-      transactionCount: 0,
-      status: "待處理",
-    };
-    setInvestigations((current) => [item, ...current]);
-    selectInvestigation(id);
-    setQuery("");
+  async function selectInvestigation(nextId: string) {
+    if (nextId === activeId) return;
+    const attempt = (selectAttempt.current += 1);
+
+    if (activeId) {
+      investigationSessions.current.set(activeId, {
+        addressDraft,
+        graphError,
+        analysisError,
+        query,
+      });
+    }
+
+    analysisRunner.stop();
+    analysisAttempt.current += 1;
+    setAnalysisRun(null);
+    setAnalysisOutcome(null);
+    setIsAnalysisCancelling(false);
+    setIsAnalysisLoading(false);
+    setWorkspaceError("");
+    try {
+      const selected = await getInvestigation(nextId);
+      if (selectAttempt.current !== attempt) return;
+      setInvestigations((current) =>
+        current.map((item) => (item.id === selected.id ? selected : item)),
+      );
+      showInvestigation(selected);
+    } catch (error) {
+      if (selectAttempt.current !== attempt) return;
+      setWorkspaceError(
+        error instanceof InvestigationClientError
+          ? error.message
+          : "無法開啟這筆調查，請稍後再試。",
+      );
+    }
+  }
+
+  async function reloadInvestigations() {
+    if (isWorkspaceLoading) return;
+    setIsWorkspaceLoading(true);
+    setWorkspaceError("");
+    try {
+      const records = await listInvestigations();
+      const selected =
+        records.find((item) => item.id === activeId) || records[0] || null;
+      setInvestigations(records);
+      if (selected) showInvestigation(selected);
+      else {
+        setActiveId("");
+        setAddressDraft("");
+      }
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof InvestigationClientError
+          ? error.message
+          : "無法重新載入調查工作區，請稍後再試。",
+      );
+    } finally {
+      setIsWorkspaceLoading(false);
+    }
+  }
+
+  async function createInvestigation() {
+    if (isWorkspaceMutating) return;
+    setIsWorkspaceMutating(true);
+    setWorkspaceError("");
+    try {
+      const created = await createInvestigationRecord("新調查任務");
+      setInvestigations((current) => [...current, created]);
+      showInvestigation(created);
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof InvestigationClientError
+          ? error.message
+          : "無法建立調查，請稍後再試。",
+      );
+    } finally {
+      setIsWorkspaceMutating(false);
+    }
   }
 
   async function runInvestigation(text?: string) {
     const command = (text || query).trim();
-    if (!command || isRunning) return;
-    const messageId = Date.now();
+    if (!active || !command || isRunning || isConversationLoading) return;
+    const investigationId = active.id;
+    const attempt = ++conversationAttempt.current;
     setQuery("");
-    setChatMessages((current) => [
-      ...current,
-      { id: messageId, role: "user", content: command },
-    ]);
+    setConversationError("");
     setIsRunning(true);
-    setInvestigations((current) =>
-      current.map((item) =>
-        item.id === activeId ? { ...item, status: "分析中" } : item,
-      ),
-    );
     try {
-      const result = await sendAgentMessage({
-        sessionId: active.id,
-        message: command,
-        investigation: {
-          id: active.id,
-          address: active.address || null,
-          network: active.network,
-        },
-      });
-      setChatMessages((current) => [
-        ...current,
-        { id: messageId + 1, role: "agent", content: result.message },
-      ]);
+      await conversationBrowser.submit(command);
+      if (conversationAttempt.current !== attempt) return;
+      const conversation = conversationBrowser.getState();
+      if (conversation.investigationId !== investigationId) return;
+      setChatMessages(conversation.messages);
+      setHasMoreConversation(Boolean(conversation.nextCursor));
     } catch (error) {
-      const message =
-        error instanceof AgentChatClientError
-          ? `${error.message}（${error.code}）`
-          : "AI Agent 接口呼叫失敗";
-      setChatMessages((current) => [
-        ...current,
-        { id: messageId + 1, role: "system", content: message },
-      ]);
+      if (conversationAttempt.current !== attempt) return;
+      setQuery((current) => current || command);
+      setConversationError(
+        error instanceof ConversationClientError
+          ? error.message
+          : "訊息結果不明，請重試；重試會沿用相同的 command identity。",
+      );
     } finally {
-      setIsRunning(false);
+      if (conversationAttempt.current === attempt) setIsRunning(false);
+    }
+  }
+
+  async function loadMoreConversation() {
+    if (!active || isConversationLoading || !hasMoreConversation) return;
+    const investigationId = active.id;
+    const attempt = ++conversationAttempt.current;
+    setConversationError("");
+    setIsConversationLoading(true);
+    try {
+      const conversation = await conversationBrowser.loadMore();
+      if (
+        conversationAttempt.current !== attempt ||
+        conversation.investigationId !== investigationId
+      ) {
+        return;
+      }
+      setChatMessages(conversation.messages);
+      setHasMoreConversation(Boolean(conversation.nextCursor));
+    } catch (error) {
+      if (conversationAttempt.current !== attempt) return;
+      setConversationError(
+        error instanceof ConversationClientError
+          ? error.message
+          : "無法載入更多對話，請稍後再試。",
+      );
+    } finally {
+      if (conversationAttempt.current === attempt) {
+        setIsConversationLoading(false);
+      }
     }
   }
 
@@ -964,32 +1010,201 @@ export function useChainTrace() {
     setContextMenu(null);
   }
 
-  function renameInvestigation(event: FormEvent<HTMLFormElement>) {
+  async function renameInvestigation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const title = renameValue.trim();
-    if (!renameTarget || !title) return;
-    setInvestigations((current) =>
-      current.map((item) =>
-        item.id === renameTarget.id ? { ...item, title } : item,
-      ),
-    );
-    setRenameTarget(null);
+    if (!renameTarget || !title || isWorkspaceMutating) return;
+    setIsWorkspaceMutating(true);
+    setWorkspaceError("");
+    try {
+      const updated = await renameInvestigationRecord(renameTarget.id, title);
+      setInvestigations((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      setRenameTarget(null);
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof InvestigationClientError
+          ? error.message
+          : "無法變更調查名稱，請稍後再試。",
+      );
+    } finally {
+      setIsWorkspaceMutating(false);
+    }
   }
 
-  function deleteInvestigation() {
-    if (!deleteTarget || investigations.length === 1) return;
-    const remaining = investigations.filter(
-      (item) => item.id !== deleteTarget.id,
-    );
-    setInvestigations(remaining);
-    if (activeId === deleteTarget.id) {
-      selectInvestigation(remaining[0].id);
-      investigationSessions.current.delete(deleteTarget.id);
-      setQuery("");
-    } else {
-      investigationSessions.current.delete(deleteTarget.id);
+  async function restoreStableState(investigationId: string, attempt: number) {
+    try {
+      const restored = await reloadStableAnalysis(investigationId);
+      if (analysisAttempt.current !== attempt) return;
+      setInvestigations((current) =>
+        current.map((item) =>
+          item.id === restored.investigation.id
+            ? restored.investigation
+            : item,
+        ),
+      );
+      if (restored.result) {
+        loadedAnalysisResult.current = `${investigationId}:${restored.result.dataset.id}`;
+        setCurrentAnalysisResult(restored.result);
+      } else {
+        loadedAnalysisResult.current = "";
+        setCurrentAnalysisResult(null);
+      }
+    } catch {
+      if (analysisAttempt.current === attempt) {
+        setAnalysisError((current) =>
+          `${current || "分析未完成。"} 無法重新載入後端穩定結果，請重新載入工作區。`,
+        );
+      }
     }
-    setDeleteTarget(null);
+  }
+
+  async function startAnalysis() {
+    if (
+      !active?.address ||
+      isAnalysisLoading ||
+      analysisRun?.status === "queued" ||
+      analysisRun?.status === "running"
+    ) {
+      return;
+    }
+    const investigationId = active.id;
+    const attempt = analysisAttempt.current + 1;
+    analysisAttempt.current = attempt;
+    setAnalysisError("");
+    setAnalysisOutcome(null);
+    setAnalysisRun(null);
+    setTargetMessage("");
+    setIsAnalysisLoading(true);
+    try {
+      const completed = await analysisRunner.start(investigationId, analysisScope, (run) => {
+        if (analysisAttempt.current !== attempt) return;
+        setAnalysisRun(run);
+        setIsAnalysisLoading(
+          run.status === "queued" || run.status === "running",
+        );
+        if (run.status === "queued" || run.status === "running") {
+          setInvestigations((current) =>
+            current.map((item) =>
+              item.id === investigationId
+                ? { ...item, status: "分析中" }
+                : item,
+            ),
+          );
+        }
+      });
+      if (analysisAttempt.current !== attempt) return;
+      if (completed.outcome === "run_lost") {
+        setAnalysisRun(null);
+        setAnalysisOutcome("run_lost");
+        setIsAnalysisLoading(false);
+        setAnalysisError(
+          "後端重新啟動後已遺失這次分析工作；既有結果已恢復，請重新送出分析。",
+        );
+        await restoreStableState(investigationId, attempt);
+        return;
+      }
+      if (completed.outcome === "cancelled") {
+        setAnalysisRun(completed.run);
+        setAnalysisOutcome("cancelled");
+        setIsAnalysisLoading(false);
+        setAnalysisError("分析已取消，未發布新結果；既有結果保持不變。");
+        await restoreStableState(investigationId, attempt);
+        return;
+      }
+      const resultId = completed.run.resultId || completed.result.dataset.id;
+      loadedAnalysisResult.current = `${investigationId}:${resultId}`;
+      setCurrentAnalysisResult(completed.result);
+      setInvestigations((current) =>
+        current.map((item) =>
+          item.id === investigationId
+            ? mergeCurrentAnalysisResult(item, completed.result, resultId)
+            : item,
+        ),
+      );
+      setIsAnalysisLoading(false);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (analysisAttempt.current !== attempt) return;
+      setAnalysisRun(null);
+      setIsAnalysisLoading(false);
+      setAnalysisOutcome("failed");
+      setAnalysisError(
+        error instanceof AnalysisRunClientError ||
+          error instanceof InvestigationClientError
+          ? error.message
+          : "分析服務目前無法使用，請稍後再試。",
+      );
+      await restoreStableState(investigationId, attempt);
+    }
+  }
+
+  async function cancelAnalysis() {
+    if (isAnalysisCancelling) return;
+    const attempt = analysisAttempt.current;
+    setIsAnalysisCancelling(true);
+    setAnalysisError("");
+    try {
+      const cancelled = await analysisRunner.cancel();
+      if (!cancelled || analysisAttempt.current !== attempt) return;
+      setAnalysisRun(cancelled);
+      setAnalysisOutcome("cancelled");
+      setIsAnalysisLoading(false);
+      setAnalysisError("分析已取消，未發布新結果；既有結果保持不變。");
+      await restoreStableState(cancelled.investigationId, attempt);
+    } catch (error) {
+      if (analysisAttempt.current !== attempt) return;
+      setAnalysisError(
+        error instanceof InvestigationClientError
+          ? error.message
+          : "無法取消分析，後端工作可能仍在進行。",
+      );
+    } finally {
+      if (analysisAttempt.current === attempt) setIsAnalysisCancelling(false);
+    }
+  }
+
+  async function deleteInvestigation() {
+    if (!deleteTarget || isWorkspaceMutating) return;
+    setIsWorkspaceMutating(true);
+    setWorkspaceError("");
+    try {
+      await analysisRunner.deleteInvestigation(deleteTarget.id);
+      if (activeId === deleteTarget.id) analysisAttempt.current += 1;
+      const remaining = investigations.filter(
+        (item) => item.id !== deleteTarget.id,
+      );
+      setInvestigations((current) =>
+        current.filter((item) => item.id !== deleteTarget.id),
+      );
+      investigationSessions.current.delete(deleteTarget.id);
+      if (activeId === deleteTarget.id) {
+        const next = remaining[0];
+        if (next) showInvestigation(next);
+        else {
+          conversationAttempt.current += 1;
+          setActiveId("");
+          setAddressDraft("");
+          setTransactionGraph(null);
+          setCurrentAnalysisResult(null);
+          setChatMessages([]);
+          setConversationError("");
+          setHasMoreConversation(false);
+          setIsConversationLoading(false);
+          setQuery("");
+        }
+      }
+      setDeleteTarget(null);
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof InvestigationClientError
+          ? error.message
+          : "無法刪除調查，請稍後再試。",
+      );
+    } finally {
+      setIsWorkspaceMutating(false);
+    }
   }
 
   return {
@@ -997,10 +1212,14 @@ export function useChainTrace() {
     activeId,
     addressDraft,
     analysisError,
-    anomalyAnalysis,
+    analysisOutcome,
+    analysisRun,
+    analysisScope,
     analysisPanelRef,
     chatMessages,
+    conversationError,
     contextMenu,
+    currentAnalysisResult,
     deleteTarget,
     filtered,
     graphCanvasRef,
@@ -1009,22 +1228,31 @@ export function useChainTrace() {
     graphOffset,
     graphSpread,
     graphError,
+    graphPageError,
     graphHistoryDepth,
     expandedNodeIds,
     expandingNodeId,
     expansionError,
     graphZoom,
+    hasMoreConversation,
     investigations,
     isAnalysisClosing,
     isAnalysisCollapsed,
     isAnalysisHovered,
     isAnalysisLoading,
+    isAnalysisCancelling,
+    isConversationLoading,
+    isExportingCsv,
     isExportingPdf,
+    exportError,
     isGraphDragging,
     isGraphFullscreen,
     isGraphLoading,
+    isGraphPageLoading,
     isLightMode,
     isRunning,
+    isWorkspaceLoading,
+    isWorkspaceMutating,
     isSidebarClosing,
     isSidebarCollapsed,
     isSidebarHovered,
@@ -1037,25 +1265,35 @@ export function useChainTrace() {
     sidebarWidth,
     analysisWidth,
     transactionGraph,
+    targetMessage,
+    workspaceError,
     beginPanelResize,
     adjustPanelWidth,
     confirmInvestigationAddress,
+    cancelAnalysis,
     createInvestigation,
     deleteInvestigation,
     enterAnalysis,
     enterSidebar,
+    exportTransactionsCsv,
     exportAnalysisPdf,
     expandGraphNode,
     leaveAnalysis,
     leaveSidebar,
+    loadMoreConversation,
+    loadMoreGraph,
     openRename,
     renameInvestigation,
+    reloadInvestigations,
+    reloadTransactionGraph,
     resetPanelWidth,
     resetGraphView,
     moveGraphNode,
     runInvestigation,
+    startAnalysis,
     setActiveId: selectInvestigation,
     setAddressDraft,
+    setAnalysisScope,
     setContextMenu,
     setDeleteTarget,
     setGraphOffset,

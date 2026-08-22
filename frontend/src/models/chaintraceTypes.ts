@@ -1,21 +1,5 @@
-export type Investigation = {
-  id: string;
-  title: string;
-  address: string;
-  network: string;
-  risk: number;
-  relatedNodes: number;
-  totalFlow: number;
-  flowAsset: string;
-  transactionCount: number;
-  status: "分析中" | "已完成" | "待處理";
-};
-
-export type ChatMessage = {
-  id: number;
-  role: "user" | "agent" | "system";
-  content: string;
-};
+export type { Investigation } from "@/src/middle/investigation-contract";
+export type { ConversationMessage as ChatMessage } from "@/src/middle/conversation-contract";
 
 export type ContextMenuState = {
   id: string;

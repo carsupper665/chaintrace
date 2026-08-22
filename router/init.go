@@ -12,16 +12,21 @@ import (
 
 func SetRouter(router *gin.Engine) {
 
-	maxReqNum := utils.GetEnvInt("GLOBAL_MAX_REQUEST_NUM", 100)
-
-	router.Use(middleware.CORS(), middleware.IpRateLimiter(maxReqNum, 60))
+	router.Use(middleware.CORS())
+	// Rate limiting lives inside ApiRouter, where the authentication boundary is
+	// known: unauthenticated routes are budgeted per IP, protected routes per
+	// Owner. See ProductionLimits.
 	ApiRouter(router)
 
 	frontendBaseUrl := utils.FrontEndUrl
 
 	frontendBaseUrl = strings.TrimSuffix(frontendBaseUrl, "/")
 	router.NoRoute(func(c *gin.Context) {
-		c.Redirect(http.StatusMovedPermanently, fmt.Sprintf("%s%s", frontendBaseUrl, c.Request.RequestURI))
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.JSON(http.StatusNotFound, gin.H{"code": "not_found", "message": "Not found"})
+			return
+		}
+		c.Redirect(http.StatusFound, fmt.Sprintf("%s%s", frontendBaseUrl, c.Request.RequestURI))
 	})
 
 }

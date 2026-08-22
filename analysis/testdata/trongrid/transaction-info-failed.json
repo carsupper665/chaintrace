@@ -1,0 +1,7 @@
+{
+  "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "blockNumber": 61603000,
+  "blockTimeStamp": 1785841200000,
+  "receipt": {"result": "REVERT"},
+  "log": []
+}

@@ -2,9 +2,11 @@ package utils
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"math/rand"
 	"net/http"
 	"os"
@@ -61,6 +63,30 @@ func GetRandomIntString(length int) string {
 		key[i] = NumberChars[rand.Intn(10)] // 只使用數字
 	}
 	return string(key)
+}
+
+func SecureRandomString(length int) (string, error) {
+	return secureRandomString(length, keyChars)
+}
+
+func SecureRandomIntString(length int) (string, error) {
+	return secureRandomString(length, NumberChars)
+}
+
+func secureRandomString(length int, alphabet string) (string, error) {
+	if length < 0 || alphabet == "" {
+		return "", fmt.Errorf("invalid random string parameters")
+	}
+	result := make([]byte, length)
+	limit := big.NewInt(int64(len(alphabet)))
+	for i := range result {
+		index, err := cryptorand.Int(cryptorand.Reader, limit)
+		if err != nil {
+			return "", err
+		}
+		result[i] = alphabet[index.Int64()]
+	}
+	return string(result), nil
 }
 
 func GetTimeString() string {

@@ -1,0 +1,9 @@
+{
+  "blockID": "0000000003abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "block_header": {
+    "raw_data": {
+      "number": 61603840,
+      "timestamp": 1785844800000
+    }
+  }
+}

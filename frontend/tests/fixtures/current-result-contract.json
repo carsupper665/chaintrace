@@ -1,0 +1,46 @@
+{
+  "dataset": {
+    "id": "",
+    "network": "",
+    "asset": "",
+    "windowStart": "0001-01-01T00:00:00Z",
+    "windowEnd": "0001-01-01T00:00:00Z",
+    "cutoffBlockId": "",
+    "transferLimit": 0,
+    "traversalDepth": 0,
+    "collectedTransfers": 0,
+    "reachedDepth": 0,
+    "partial": false,
+    "confidence": 0,
+    "stopReason": "",
+    "createdAt": "0001-01-01T00:00:00Z"
+  },
+  "metrics": {
+    "relatedNodes": 0,
+    "transferCount": 0,
+    "totalFlow": {
+      "smallestUnit": "",
+      "decimals": 0,
+      "asset": ""
+    }
+  },
+  "assessment": {
+    "score": 0,
+    "level": "",
+    "reasons": [
+      ""
+    ],
+    "nodeAssessments": [
+      {
+        "address": "",
+        "score": 0,
+        "level": "",
+        "reasons": [
+          ""
+        ]
+      }
+    ],
+    "source": "",
+    "updatedAt": "0001-01-01T00:00:00Z"
+  }
+}

@@ -6,8 +6,9 @@ import { AgentPanel } from "@/src/ui/AgentPanel";
 import { AnalysisPanel } from "@/src/ui/AnalysisPanel";
 import { CaseDialogs } from "@/src/ui/CaseDialogs";
 import { WorkspacePanel } from "@/src/ui/WorkspacePanel";
+import type { Owner } from "@/src/auth/backend";
 
-export function ChainTraceApp() {
+export function ChainTraceApp({ owner }: { owner: Owner }) {
   const ui = useChainTrace();
 
   return (
@@ -30,9 +31,36 @@ export function ChainTraceApp() {
         ui.resizingPanel ? "panel-resizing" : ""
       }`}
     >
-      <WorkspacePanel ui={ui} />
-      <AgentPanel ui={ui} />
-      <AnalysisPanel ui={ui} />
+      <WorkspacePanel ui={ui} owner={owner} />
+      {ui.active ? (
+        <>
+          <AgentPanel ui={ui} />
+          <AnalysisPanel ui={ui} />
+        </>
+      ) : (
+        <section className="workspace-main-empty" aria-live="polite">
+          <span className="eyebrow">INVESTIGATIONS</span>
+          <h2>
+            {ui.isWorkspaceLoading ? "正在載入調查工作區" : "尚無調查紀錄"}
+          </h2>
+          <p>
+            {ui.workspaceError
+              ? ui.workspaceError
+              : ui.isWorkspaceLoading
+                ? "正在向後端取得這位 Owner 的調查紀錄。"
+                : "新增第一筆 TRON mainnet 調查，紀錄會由後端保存。"}
+          </p>
+          {!ui.isWorkspaceLoading && (
+            <button
+              type="button"
+              onClick={() => void ui.createInvestigation()}
+              disabled={ui.isWorkspaceMutating}
+            >
+              {ui.isWorkspaceMutating ? "建立中…" : "新增調查"}
+            </button>
+          )}
+        </section>
+      )}
       <CaseDialogs ui={ui} />
     </main>
   );

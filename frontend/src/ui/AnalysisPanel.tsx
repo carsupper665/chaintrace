@@ -1,10 +1,97 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ChainTraceController } from "@/src/hooks/useChainTrace";
 import type { TransactionGraphEdge } from "@/src/middle/transaction-graph-contract";
-import { getRiskTone } from "@/src/utils/riskTone";
+import type { CurrentAnalysisResult, ExactAmount } from "@/src/middle/investigation-contract";
+import { formatExactAmount } from "@/src/middle/investigation-client";
+import { AnalysisResultDetails } from "@/src/ui/AnalysisResultDetails";
 
-export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
+export function TransactionGraphAmount({ amount }: { amount: ExactAmount }) {
+  return <>{formatExactAmount(amount)} {amount.asset}</>;
+}
+
+export function TransactionGraphCounts({
+  metrics,
+  loadedNodes,
+  loadedEdges,
+  visibleEdges,
+}: {
+  metrics: CurrentAnalysisResult["metrics"] | null;
+  loadedNodes: number;
+  loadedEdges: number;
+  visibleEdges: number;
+}) {
+  return (
+    <small className="graph-counts">
+      <span>
+        Dataset 總計：{metrics ? metrics.relatedNodes : "—"} 節點 ·{" "}
+        {metrics ? metrics.transferCount : "—"} Transfer
+      </span>
+      <span>
+        目前顯示：{visibleEdges} / 已載入 {loadedEdges} Transfer · {loadedNodes} 節點
+      </span>
+    </small>
+  );
+}
+
+export function AnalysisExportActions({
+  disabled,
+  isExportingCsv,
+  isExportingPdf,
+  error,
+  onExportCsv,
+  onExportPdf,
+}: {
+  disabled: boolean;
+  isExportingCsv: boolean;
+  isExportingPdf: boolean;
+  error: string;
+  onExportCsv: () => void;
+  onExportPdf: () => void;
+}) {
+  const isExporting = isExportingCsv || isExportingPdf;
+  return (
+    <div className="analysis-export-wrap">
+      <div className="analysis-export-actions" aria-label="匯出目前穩定分析">
+        <button
+          type="button"
+          className="analysis-export-button csv-export-button"
+          aria-label="下載完整 Dataset CSV"
+          onClick={onExportCsv}
+          disabled={disabled || isExporting}
+        >
+          {isExportingCsv ? "CSV 產生中…" : "CSV"}
+        </button>
+        <button
+          type="button"
+          className="analysis-export-button pdf-export-button"
+          aria-label="下載目前分析 PDF"
+          onClick={onExportPdf}
+          disabled={disabled || isExporting}
+        >
+          {isExportingPdf ? "PDF 產生中…" : "PDF"}
+        </button>
+      </div>
+      {error && (
+        <small className="analysis-export-error" role="alert">
+          {error}
+        </small>
+      )}
+    </div>
+  );
+}
+
+export function AnalysisPanel({
+  ui: {
+    analysisPanelRef,
+    graphCanvasRef,
+    graphCardRef,
+    graphDragStart: graphDragStartRef,
+    ...ui
+  },
+}: {
+  ui: ChainTraceController;
+}) {
   const [selectedDate, setSelectedDate] = useState("");
   const [isCompactGraph, setIsCompactGraph] = useState(false);
   const [hiddenGraphGroups, setHiddenGraphGroups] = useState<Set<number>>(
@@ -39,9 +126,22 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
   } | null>(null);
   const nodeWasDragged = useRef(false);
   const graphNodes = ui.transactionGraph?.nodes || [];
-  const anomalyTone = ui.anomalyAnalysis
-    ? getRiskTone(ui.anomalyAnalysis.score)
+  const currentResult = ui.currentAnalysisResult;
+  const assessment = currentResult?.assessment ?? null;
+  const anomalyTone = assessment?.level
+    ? assessment.level === "low"
+      ? "safe"
+      : assessment.level === "medium"
+        ? "caution"
+        : "danger"
     : "pending";
+  const assessmentSummary = assessment
+    ? assessment.score === null
+      ? "目前資料不足，後端未產生風險分數。"
+      : assessment.reasons.length > 0
+        ? `後端規則命中：${assessment.reasons.join("、")}`
+        : "後端已完成確定性規則評估，未回傳額外原因。"
+    : "尚無分析結果。";
   const graphEdges = ui.transactionGraph?.edges || [];
   const graphUpdatedLabel = ui.transactionGraph?.updatedAt
     ? new Date(ui.transactionGraph.updatedAt).toLocaleString("zh-TW", {
@@ -53,37 +153,38 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
       })
     : "";
   useEffect(() => {
-    setSelectedDate("");
-    setHiddenGraphGroups(new Set());
-    setDirectionFilter("all");
-  }, [ui.transactionGraph?.address]);
+    let cancelled = false;
+    window.queueMicrotask(() => {
+      if (cancelled) return;
+      setSelectedDate("");
+      setHiddenGraphGroups(new Set());
+      setDirectionFilter("all");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [ui.transactionGraph?.datasetId]);
   useEffect(
     () => () => {
       if (copyFeedbackTimer.current) clearTimeout(copyFeedbackTimer.current);
     },
     [],
   );
-  const transactionDates = useMemo(
-    () =>
-      [...new Set(
+  const transactionDates = [
+    ...new Set(
+      graphEdges
+        .map((edge) => edge.timestamp?.slice(0, 10))
+        .filter((date): date is string => Boolean(date)),
+    ),
+  ].sort((a, b) => b.localeCompare(a));
+  const matchingEdges = selectedDate
+    ? new Set(
         graphEdges
-          .map((edge) => edge.timestamp?.slice(0, 10))
-          .filter((date): date is string => Boolean(date)),
-      )].sort((a, b) => b.localeCompare(a)),
-    [graphEdges],
-  );
-  const matchingEdges = useMemo(
-    () =>
-      selectedDate
-        ? new Set(
-            graphEdges
-              .filter((edge) => edge.timestamp?.slice(0, 10) === selectedDate)
-              .map((edge) => edge.id),
-          )
-        : null,
-    [graphEdges, selectedDate],
-  );
-  const matchingNodes = useMemo(() => {
+          .filter((edge) => edge.timestamp?.slice(0, 10) === selectedDate)
+          .map((edge) => edge.id),
+      )
+    : null;
+  const matchingNodes = (() => {
     if (!matchingEdges) return null;
     const ids = new Set<string>();
     for (const edge of graphEdges) {
@@ -93,7 +194,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
       }
     }
     return ids;
-  }, [graphEdges, matchingEdges]);
+  })();
   const layerColors = [
     "#25c978",
     "#4f91ff",
@@ -162,7 +263,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
     visibleNodeIds.add(edge.to);
   }
   if (investigationNodeId) visibleNodeIds.add(investigationNodeId);
-  const dateMarkers = useMemo(() => {
+  const dateMarkers = (() => {
     const relationshipMarkers = new Map<
       string,
       { edge: (typeof graphEdges)[number]; dates: Set<string> }
@@ -185,14 +286,20 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
     const nodesById = new Map(graphNodes.map((node) => [node.id, node]));
 
     return [...relationshipMarkers.values()].flatMap(
-      (marker) => {
+      (marker, index) => {
       const from = nodesById.get(marker.edge.from);
       const to = nodesById.get(marker.edge.to);
       if (!from || !to) return [];
 
-      const midpoint = {
-        x: (from.x + to.x) / 2,
-        y: (from.y + to.y) / 2,
+      // Nearly every edge leaves the focus node, so midpoints all land on one
+      // tight inner ring and the labels bury each other. Rotate each label
+      // through five distances along its own edge so neighbours sit on
+      // different radii. The band stops well short of 1 because a label parked
+      // next to a node collides with that node's address chip instead.
+      const reach = 0.46 + 0.08 * (index % 5);
+      const anchor = {
+        x: from.x + (to.x - from.x) * reach,
+        y: from.y + (to.y - from.y) * reach,
       };
       const dates = [...marker.dates].sort();
       const firstDate = dates[0];
@@ -203,10 +310,10 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
           : firstDate.slice(0, 4) === lastDate.slice(0, 4)
             ? `${firstDate}～${lastDate.slice(5)}`
             : `${firstDate}～${lastDate}`;
-      return [{ ...marker, dates, dateLabel, ...midpoint }];
+      return [{ ...marker, dates, dateLabel, ...anchor }];
     },
     );
-  }, [graphEdges, graphNodes]);
+  })();
   const selectedNode =
     graphNodes.find((node) => node.id === ui.selectedNodeId) || null;
   const selectedEdges = selectedNode
@@ -228,8 +335,9 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
       ).size
     : 0;
   const selectedAssessment = selectedNode
-    ? ui.anomalyAnalysis?.nodeAssessments?.find(
-        (assessment) => assessment.nodeId.toLowerCase() === selectedNode.id,
+    ? assessment?.nodeAssessments.find(
+        (item) =>
+          item.address.toLowerCase() === selectedNode.address.toLowerCase(),
       )
     : null;
   const hoverNode = hoveredNode
@@ -253,22 +361,6 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
         ),
       ).size
     : 0;
-  const summarizeFlow = (edges: TransactionGraphEdge[]) => {
-    const totals = new Map<string, number>();
-    for (const edge of edges) {
-      totals.set(edge.asset, (totals.get(edge.asset) ?? 0) + edge.value);
-    }
-    if (totals.size === 0) return "0";
-    return [...totals.entries()]
-      .map(
-        ([asset, amount]) =>
-          `${amount.toLocaleString(undefined, {
-            maximumFractionDigits: 6,
-          })} ${asset}`,
-      )
-      .join(" + ");
-  };
-
   async function copyNodeAddress(address: string) {
     let copied = false;
     try {
@@ -307,7 +399,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
       setNodeSearchMessage("找不到此節點");
       return;
     }
-    const canvas = ui.graphCanvasRef.current;
+    const canvas = graphCanvasRef.current;
     if (canvas) {
       const rect = canvas.getBoundingClientRect();
       ui.setGraphOffset({
@@ -325,34 +417,6 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
     }
     ui.setSelectedNodeId(node.id);
     setNodeSearchMessage("已定位節點");
-  }
-
-  function exportTransactionsCsv() {
-    if (!ui.transactionGraph) return;
-    const escapeCell = (value: string | number | null) =>
-      `"${String(value ?? "").replaceAll('"', '""')}"`;
-    const rows = [
-      ["交易識別碼", "日期時間", "發送方", "接收方", "金額", "資產"],
-      ...graphEdges.map((edge) => [
-        edge.id,
-        edge.timestamp,
-        nodeById.get(edge.from)?.address || edge.from,
-        nodeById.get(edge.to)?.address || edge.to,
-        edge.value,
-        edge.asset,
-      ]),
-    ];
-    const csv =
-      "\uFEFF" +
-      rows.map((row) => row.map(escapeCell).join(",")).join("\r\n");
-    const url = URL.createObjectURL(
-      new Blob([csv], { type: "text/csv;charset=utf-8" }),
-    );
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `chaintrace-${ui.transactionGraph.address.slice(0, 10)}-transactions.csv`;
-    anchor.click();
-    URL.revokeObjectURL(url);
   }
 
   const copyFeedbackToast =
@@ -375,7 +439,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
   return (
     <>
     <aside
-      ref={ui.analysisPanelRef}
+      ref={analysisPanelRef}
       className={`analysis-panel ${
         ui.isGraphFullscreen ? "graph-overlay-active" : ""
       }`}
@@ -469,17 +533,21 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
       </header>
 
       <section
-        ref={ui.graphCardRef}
+        ref={graphCardRef}
         className={`graph-card ${ui.isGraphFullscreen ? "graph-fullscreen" : ""}`}
       >
         <div className="card-heading">
           <div>
             <h3>交易關係圖譜</h3>
-            <small>
-              {ui.active.relatedNodes} 節點 · {ui.active.transactionCount} 交易
-              {ui.graphSpread > 1 &&
-                ` · 畫布 ${Math.round(ui.graphSpread * 100)}%`}
-            </small>
+            <TransactionGraphCounts
+              metrics={currentResult?.metrics ?? null}
+              loadedNodes={graphNodes.length}
+              loadedEdges={graphEdges.length}
+              visibleEdges={visibleGraphEdges.length}
+            />
+            {ui.graphSpread > 1 && (
+              <small>畫布 {Math.round(ui.graphSpread * 100)}%</small>
+            )}
             {ui.transactionGraph && (
               <div className="graph-data-meta">
                 <span>資料來源：{ui.transactionGraph.source}</span>
@@ -553,16 +621,6 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                 簡潔
               </button>
             </div>
-            <button
-              type="button"
-              className="graph-csv-button"
-              onClick={exportTransactionsCsv}
-              disabled={!ui.transactionGraph}
-              aria-label="下載交易 CSV"
-              title="下載交易 CSV"
-            >
-              CSV
-            </button>
             <button
               aria-label="放大"
               title={`放大（${Math.round(ui.graphZoom * 100)}%）`}
@@ -642,9 +700,21 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
             >
               ↶ 上一步
             </button>
+            <button
+              type="button"
+              className="graph-load-more-button"
+              onClick={() => void ui.loadMoreGraph()}
+              disabled={!ui.transactionGraph.hasMore || ui.isGraphPageLoading}
+            >
+              {ui.isGraphPageLoading
+                ? "載入中…"
+                : ui.transactionGraph.hasMore
+                  ? "載入更多"
+                  : "已載入全部"}
+            </button>
             <div className="graph-filter-summary" role="status">
               <strong>{visibleGraphEdges.length}</strong>
-              <span>/ {graphEdges.length} 筆交易</span>
+              <span>/ 已載入 {graphEdges.length} 筆 Transfer</span>
               {selectedDate && matchingEdges && (
                 <span>· 日期符合 {matchingEdges.size} 筆</span>
               )}
@@ -662,10 +732,15 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
             >
               清除篩選
             </button>
+            {ui.graphPageError && (
+              <span className="graph-page-error" role="alert">
+                {ui.graphPageError}
+              </span>
+            )}
           </div>
         )}
         <div
-          ref={ui.graphCanvasRef}
+          ref={graphCanvasRef}
           className={`graph-canvas ${ui.isGraphDragging ? "dragging" : ""}`}
           aria-label="可拖曳與縮放的交易關係圖"
           tabIndex={0}
@@ -690,7 +765,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
               return;
             }
             event.currentTarget.setPointerCapture(event.pointerId);
-            ui.graphDragStart.current = {
+            graphDragStartRef.current = {
               x: event.clientX,
               y: event.clientY,
               offsetX: ui.graphOffset.x,
@@ -702,13 +777,13 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
             if (!ui.isGraphDragging) return;
             ui.setGraphOffset({
               x:
-                ui.graphDragStart.current.offsetX +
+                graphDragStartRef.current.offsetX +
                 event.clientX -
-                ui.graphDragStart.current.x,
+                graphDragStartRef.current.x,
               y:
-                ui.graphDragStart.current.offsetY +
+                graphDragStartRef.current.offsetY +
                 event.clientY -
-                ui.graphDragStart.current.y,
+                graphDragStartRef.current.y,
             });
           }}
           onPointerUp={(event) => {
@@ -721,29 +796,45 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
         >
           {!ui.transactionGraph && (
             <div className="graph-empty-state">
-              {ui.isGraphLoading ? (
+              {ui.isGraphPageLoading ? (
                 <>
                   <i />
-                  <strong>正在抓取實際鏈上交易</strong>
-                  <span>取得資料後會自動生成交易關係圖譜</span>
+                  <strong>正在載入 Analysis Dataset 圖譜</strong>
+                  <span>只讀取目前 Dataset 已保存的 Transfer relationships</span>
                 </>
-              ) : ui.graphError ? (
+              ) : ui.graphPageError ? (
                 <>
-                  <strong>無法生成圖譜</strong>
-                  <span>{ui.graphError}</span>
+                  <strong role="alert">交易圖譜載入失敗</strong>
+                  <span>{ui.graphPageError}</span>
                   <button
                     type="button"
                     className="graph-retry-button"
-                    onClick={() => void ui.confirmInvestigationAddress()}
-                    disabled={ui.isGraphLoading}
+                    onClick={ui.reloadTransactionGraph}
                   >
-                    重新取得資料
+                    重新載入
                   </button>
+                </>
+              ) : ui.isGraphLoading ? (
+                <>
+                  <i />
+                  <strong>正在儲存 TRON 調查目標</strong>
+                  <span>後端會再次驗證地址格式與 checksum</span>
+                </>
+              ) : ui.active?.address ? (
+                <>
+                  <strong>
+                    {currentResult ? "分析結果已載入" : "調查目標已儲存"}
+                  </strong>
+                  <span>
+                    {currentResult
+                      ? "目前僅載入分析結果；尚未請求或提交交易圖譜。"
+                      : "按下開始分析後，這裡會顯示後端發布的結果摘要。"}
+                  </span>
                 </>
               ) : (
                 <>
                   <strong>尚未指定調查目標</strong>
-                  <span>請在中間上方輸入 Ethereum 錢包地址並按下確認</span>
+                  <span>請在中間上方輸入 TRON Base58Check 地址並儲存目標</span>
                 </>
               )}
             </div>
@@ -822,7 +913,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                   >
                     <title>
                       {edge.timestamp?.slice(0, 10) || "日期未知"} ·{" "}
-                      {edge.value.toLocaleString()} {edge.asset}
+                       {formatExactAmount(edge.amount)} {edge.amount.asset}
                     </title>
                   </line>
                   <line
@@ -844,7 +935,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                     vectorEffect="non-scaling-stroke"
                     onPointerDown={(event) => event.stopPropagation()}
                     onPointerMove={(event) => {
-                      const canvas = ui.graphCanvasRef.current;
+                      const canvas = graphCanvasRef.current;
                       if (!canvas) return;
                       const rect = canvas.getBoundingClientRect();
                       setHoveredEdge({
@@ -854,7 +945,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                       });
                     }}
                     onMouseMove={(event) => {
-                      const canvas = ui.graphCanvasRef.current;
+                      const canvas = graphCanvasRef.current;
                       if (!canvas) return;
                       const rect = canvas.getBoundingClientRect();
                       setHoveredEdge({
@@ -864,7 +955,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                       });
                     }}
                     onMouseEnter={(event) => {
-                      const canvas = ui.graphCanvasRef.current;
+                      const canvas = graphCanvasRef.current;
                       if (!canvas) return;
                       const rect = canvas.getBoundingClientRect();
                       setHoveredEdge({
@@ -922,10 +1013,10 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                 role="button"
                 tabIndex={0}
                 aria-label={`選取並查看節點 ${node.address}`}
-                title="單擊查看資料，雙擊展開交易關係"
+                title="單擊查看資料，雙擊揭露 Dataset 內的交易關係"
                 onPointerEnter={(event) => {
                   if (!ui.isGraphFullscreen || nodeDrag.current) return;
-                  const canvas = ui.graphCanvasRef.current;
+                  const canvas = graphCanvasRef.current;
                   if (!canvas) return;
                   const rect = canvas.getBoundingClientRect();
                   const cardWidth = 286;
@@ -961,7 +1052,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                   const dx = event.clientX - drag.clientX;
                   const dy = event.clientY - drag.clientY;
                   if (Math.hypot(dx, dy) > 3) nodeWasDragged.current = true;
-                  const canvas = ui.graphCanvasRef.current;
+                  const canvas = graphCanvasRef.current;
                   if (!canvas) return;
                   const rect = canvas.getBoundingClientRect();
                   ui.moveGraphNode(
@@ -1018,8 +1109,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                 style={{ left: hoveredEdge.x, top: hoveredEdge.y }}
               >
                 <strong>
-                  {hoveredEdge.edge.value.toLocaleString()}{" "}
-                  {hoveredEdge.edge.asset}
+                  <TransactionGraphAmount amount={hoveredEdge.edge.amount} />
                 </strong>
                 <span>
                   {hoveredEdge.edge.timestamp
@@ -1043,12 +1133,8 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
               <div className="graph-node-popover-tags">
                 <span>{hoverNode.type === "contract" ? "合約" : "錢包"}</span>
                 <span>{hoverEdges.length} 筆關聯交易</span>
-                <span className="flow-in">
-                  轉入 {summarizeFlow(hoverIncomingEdges)}
-                </span>
-                <span className="flow-out">
-                  轉出 {summarizeFlow(hoverOutgoingEdges)}
-                </span>
+                 <span className="flow-in">轉入 {hoverIncomingEdges.length} 筆</span>
+                 <span className="flow-out">轉出 {hoverOutgoingEdges.length} 筆</span>
               </div>
               <p>
                 轉入 {hoverIncomingEdges.length} 筆 · 轉出{" "}
@@ -1136,7 +1222,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                       disabled={ui.expandingNodeId !== null}
                     >
                       {ui.expandingNodeId === selectedNode.id
-                        ? "正在抓取並展開..."
+                        ? "正在載入 Dataset relationships..."
                         : "展開此節點的交易關係"}
                       <span>↗</span>
                     </button>
@@ -1147,24 +1233,12 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                       <strong>{selectedEdges.length}</strong>
                     </div>
                     <div>
-                      <small>轉入</small>
-                      <strong>
-                        {incomingEdges
-                          .reduce((sum, edge) => sum + edge.value, 0)
-                          .toLocaleString(undefined, {
-                            maximumFractionDigits: 4,
-                          })}
-                      </strong>
+                       <small>圖中轉入</small>
+                       <strong>{incomingEdges.length} 筆</strong>
                     </div>
                     <div>
-                      <small>轉出</small>
-                      <strong>
-                        {outgoingEdges
-                          .reduce((sum, edge) => sum + edge.value, 0)
-                          .toLocaleString(undefined, {
-                            maximumFractionDigits: 4,
-                          })}
-                      </strong>
+                       <small>圖中轉出</small>
+                       <strong>{outgoingEdges.length} 筆</strong>
                     </div>
                     <div>
                       <small>交易對手</small>
@@ -1186,8 +1260,9 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                     </strong>
                     <p>
                       {selectedAssessment
-                        ? selectedAssessment.summary
-                        : "此處僅顯示後端模型回傳的節點風險，目前尚無判讀資料。"}
+                        ? selectedAssessment.reasons
+                            .join("、") || "後端未提供節點原因。"
+                        : "目前結果沒有此節點的後端評估。"}
                     </p>
                   </div>
                 </>
@@ -1202,15 +1277,14 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
               <span className="eyebrow">ANOMALY SCORE</span>
               <div>
                 <strong className={`risk-text risk-${anomalyTone}`}>
-                  {ui.anomalyAnalysis?.score ?? "—"}
+                  {assessment?.score ?? "—"}
                 </strong>
                 <h4>異常分析摘要</h4>
               </div>
               <p>
                 {ui.isAnalysisLoading
-                  ? "正在等待異常分析結果..."
-                  : ui.anomalyAnalysis?.summary ||
-                    "交易資料已取得，等待異常分析後端接口回傳。"}
+                  ? "正在等待後端分析結果..."
+                  : assessmentSummary}
               </p>
             </div>
 
@@ -1218,21 +1292,23 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
               <div className="fullscreen-ai-heading">
                 <div>
                   <span>✦</span>
-                  <h4>AI 調查判讀</h4>
+                  <h4>規則調查判讀</h4>
                 </div>
-                <button
-                  className="pdf-export-button"
-                  onClick={() => void ui.exportAnalysisPdf()}
-                  disabled={ui.isExportingPdf || !ui.transactionGraph}
-                >
-                  ↓ PDF
-                </button>
+                <AnalysisExportActions
+                  disabled={!ui.active?.currentResult || !currentResult}
+                  isExportingCsv={ui.isExportingCsv}
+                  isExportingPdf={ui.isExportingPdf}
+                  error={ui.exportError}
+                  onExportCsv={() => void ui.exportTransactionsCsv()}
+                  onExportPdf={() => void ui.exportAnalysisPdf()}
+                />
               </div>
               <p>
                 {ui.isAnalysisLoading
                   ? "正在分析交易資料..."
-                  : ui.anomalyAnalysis?.interpretation ||
-                    "取得交易資料並完成模型分析後顯示。"}
+                  : assessment
+                    ? `此結果由 ${assessment.source} 產生；前端未重新計算分數或指標。`
+                    : "完成分析後顯示後端評估來源。"}
               </p>
             </div>
           </aside>
@@ -1273,7 +1349,7 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                 disabled={ui.expandingNodeId !== null}
               >
                 {ui.expandingNodeId === selectedNode.id
-                  ? "正在抓取並展開…"
+                  ? "正在載入 Dataset relationships…"
                   : "展開此節點的交易關係"}
                 <span>↗</span>
               </button>
@@ -1284,22 +1360,14 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
                 <strong>{selectedEdges.length}</strong>
               </div>
               <div>
-                <small>轉入</small>
-                <strong>
-                  {incomingEdges
-                    .reduce((sum, edge) => sum + edge.value, 0)
-                    .toLocaleString(undefined, { maximumFractionDigits: 6 })}
-                </strong>
-                <span>ETH · {incomingEdges.length} 筆</span>
+                 <small>圖中轉入</small>
+                 <strong>{incomingEdges.length}</strong>
+                 <span>筆 Transfer</span>
               </div>
               <div>
-                <small>轉出</small>
-                <strong>
-                  {outgoingEdges
-                    .reduce((sum, edge) => sum + edge.value, 0)
-                    .toLocaleString(undefined, { maximumFractionDigits: 6 })}
-                </strong>
-                <span>ETH · {outgoingEdges.length} 筆</span>
+                 <small>圖中轉出</small>
+                 <strong>{outgoingEdges.length}</strong>
+                 <span>筆 Transfer</span>
               </div>
               <div>
                 <small>交易對手</small>
@@ -1328,8 +1396,9 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
               </strong>
               <small>
                 {selectedAssessment
-                  ? `${selectedAssessment.summary}（來源：${selectedAssessment.source}）`
-                  : "此處只顯示真實模型回傳的節點風險；目前後端尚未提供節點安全判讀。"}
+                  ? selectedAssessment.reasons
+                      .join("、") || "後端未提供節點原因。"
+                  : "此處只顯示目前後端結果中的節點安全判讀。"}
               </small>
             </div>
             {ui.expansionError && (
@@ -1345,103 +1414,89 @@ export function AnalysisPanel({ ui }: { ui: ChainTraceController }) {
             className={`score-ring risk-${anomalyTone}`}
             style={
               {
-                "--score": `${ui.anomalyAnalysis?.score || 0}%`,
+                "--score": `${assessment?.score ?? 0}%`,
               } as React.CSSProperties
             }
           >
-            <span>{ui.anomalyAnalysis?.score ?? "—"}</span>
+            <span>{assessment?.score ?? "—"}</span>
             <small>
-              {ui.anomalyAnalysis
-                ? ui.anomalyAnalysis.level === "critical"
+              {assessment?.level
+                ? assessment.level === "critical"
                   ? "極高風險"
-                  : ui.anomalyAnalysis.level === "high"
+                  : assessment.level === "high"
                     ? "高風險"
-                    : ui.anomalyAnalysis.level === "medium"
+                    : assessment.level === "medium"
                       ? "中風險"
                       : "低風險"
-                : "待分析"}
+                : assessment
+                  ? "證據不足"
+                  : "待分析"}
             </small>
           </div>
           <div>
             <span className="eyebrow">ANOMALY SCORE</span>
             <h3>異常分析摘要</h3>
             <p>
-              {ui.isAnalysisLoading
-                ? "交易圖譜已取得，正在等待異常模型完成判讀…"
-                : ui.anomalyAnalysis
-                  ? ui.anomalyAnalysis.summary
-                  : ui.analysisError ||
-                    (ui.transactionGraph
-                      ? "交易圖譜已取得，尚未產生異常分析結果。"
-                      : "輸入調查地址並取得交易資料後，才會開始異常分析。")}
+               {ui.isAnalysisLoading
+                 ? currentResult
+                   ? "新一輪分析進行中；目前仍顯示既有穩定結果。"
+                   : "後端正在收集 Transfer 並產生分析結果…"
+                : ui.analysisError ||
+                  (assessment
+                    ? assessmentSummary
+                    : ui.active?.address
+                      ? "調查目標已儲存，按下開始分析以取得後端結果。"
+                      : "請先儲存 TRON 調查目標。")}
             </p>
           </div>
         </div>
 
-        <div className="risk-scale" aria-label="風險分數區間">
-          <span className="risk-safe">0–29 安全</span>
-          <span className="risk-caution">30–69 注意</span>
-          <span className="risk-danger">70–100 危險</span>
-        </div>
+         {assessment?.score !== null && assessment?.score !== undefined && (
+           <div className="risk-scale" aria-label="風險分數區間">
+             <span className="risk-safe">0–24 低</span>
+             <span className="risk-caution">25–49 中</span>
+             <span className="risk-danger">50–74 高</span>
+             <span className="risk-danger">75–100 極高</span>
+           </div>
+         )}
 
-        {ui.anomalyAnalysis && ui.anomalyAnalysis.reasons.length > 0 && (
-          <div className="risk-reasons">
-            {ui.anomalyAnalysis.reasons.map((reason) => (
-              <div key={reason.code}>
-                <span className="reason-icon">◇</span>
-                <div>
-                  <strong>{reason.title}</strong>
-                  <small>{reason.description}</small>
-                </div>
-                {reason.contribution !== null && (
-                  <b>
-                    {reason.contribution > 0 ? "+" : ""}
-                    {reason.contribution}
-                  </b>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+         {currentResult && (
+           <AnalysisResultDetails
+             result={currentResult}
+             attemptError={ui.analysisError}
+           />
+         )}
       </section>
 
       <section className="insight-card">
         <div className="insight-heading">
           <span>✦</span>
             <div>
-              <h3>AI 調查判讀</h3>
+              <h3>確定性規則判讀</h3>
               <small>
-                {ui.anomalyAnalysis
-                  ? `來源：${ui.anomalyAnalysis.source}`
-                  : "取得交易資料並完成模型分析後顯示"}
+                {assessment
+                  ? `來源：${assessment.source}`
+                  : "分析完成後顯示後端評估來源"}
               </small>
             </div>
-          <button
-            className="pdf-export-button"
-            onClick={() => void ui.exportAnalysisPdf()}
-            title="下載 PDF 報告"
-            disabled={ui.isExportingPdf || !ui.transactionGraph}
-          >
-            {ui.isExportingPdf ? "產生中…" : "↓ PDF"}
-          </button>
+          {!ui.isGraphFullscreen && (
+            <AnalysisExportActions
+              disabled={!ui.active?.currentResult || !currentResult}
+              isExportingCsv={ui.isExportingCsv}
+              isExportingPdf={ui.isExportingPdf}
+              error={ui.exportError}
+              onExportCsv={() => void ui.exportTransactionsCsv()}
+              onExportPdf={() => void ui.exportAnalysisPdf()}
+            />
+          )}
         </div>
         <p>
           {ui.isAnalysisLoading
-            ? "正在產生可解釋的調查判讀…"
-            : ui.anomalyAnalysis
-              ? ui.anomalyAnalysis.interpretation
-              : ui.analysisError ||
-                "目前沒有模型判讀結果，不會顯示預設或模擬內容。"}
+            ? "正在等待後端規則評估…"
+            : assessment
+              ? `${assessmentSummary} 分數、原因與指標均直接來自目前結果。`
+              : ui.analysisError || "目前沒有分析結果，不會顯示預設或模擬內容。"}
         </p>
-        {ui.anomalyAnalysis?.recommendations.map((recommendation) => (
-          <button
-            key={recommendation}
-            onClick={() => ui.runInvestigation(recommendation)}
-          >
-            延伸追蹤建議
-            <span>{recommendation} →</span>
-          </button>
-        ))}
           </section>
     </aside>
     {copyFeedbackToast}

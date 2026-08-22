@@ -31,6 +31,15 @@ func GetUserByEmail(email string) (user *store.User, err error) {
 	return user, nil
 }
 
+func GetUserByID(id uint) (user *store.User, err error) {
+	user = &store.User{}
+	err = DB.First(user, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
 func AddUser(user *store.User) error {
 	if user == nil {
 		return ErrUserRequire

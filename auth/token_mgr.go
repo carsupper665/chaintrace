@@ -48,7 +48,7 @@ func (tr *RevokedTokenRegistry) ClearEvent() error {
 	newTokens := make(map[string]*discardedTokenStore)
 	for k, v := range tr.Tokens {
 		if time.Now().After(v.ExpireAt) {
-			logger.Infof("%s's Token expired at %v, Removed.", v.ExpireAt, v.RevokedUser)
+			logger.Infof("%s's Token expired at %v, Removed.", v.RevokedUser, v.ExpireAt)
 			continue
 		}
 		newTokens[k] = v

@@ -1,8 +1,8 @@
 export type RiskTone = "safe" | "caution" | "danger";
 
 export function getRiskTone(score: number): RiskTone {
-  if (score < 30) return "safe";
-  if (score < 70) return "caution";
+  if (score < 25) return "safe";
+  if (score < 50) return "caution";
   return "danger";
 }
 

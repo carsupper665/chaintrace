@@ -3,3 +3,4 @@ logs/*
 .idea/*
 .vscode/*
 *.exe
+DB.db

@@ -5,6 +5,7 @@ import (
 	"chaintrace/router"
 	"fmt"
 	"net/http"
+	"time"
 
 	"chaintrace/middleware"
 	"chaintrace/model"
@@ -48,15 +49,17 @@ func main() {
 	}
 
 	server := gin.New()
+	if err := server.SetTrustedProxies(utils.TrustedProxies); err != nil {
+		logger.Fatal("invalid TRUSTED_PROXIES: " + err.Error())
+	}
 	server.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
 		logger.Errorf("panic detected: %v", err)
-		err = utils.SendErrorToDc(fmt.Sprintf("Panic detected: %v", err))
-		if err != nil {
-			logger.Errorf("Failed to send error to Discord: %v", err)
+		if sendErr := utils.SendErrorToDc(fmt.Sprintf("Panic detected: %v", err)); sendErr != nil {
+			logger.Errorf("Failed to send error to Discord: %v", sendErr)
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": gin.H{
-				"message": fmt.Sprintf("Unknow Error: %v", err),
+				"message": "Internal server error",
 				"type":    "unknow_panic",
 			},
 		})
@@ -82,7 +85,15 @@ func main() {
 	port := utils.GetEnvString("PORT", "7794")
 	logger.Infof("Server running on: %s", port)
 
-	if err := server.Run(":" + port); err != nil {
+	httpServer := &http.Server{
+		Addr:              ":" + port,
+		Handler:           server,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := httpServer.ListenAndServe(); err != nil {
 		logger.Fatal("failed to start HTTP server: " + err.Error())
 	}
 

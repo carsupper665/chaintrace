@@ -31,7 +31,7 @@ func SendEmail(subject string, receiver string, content string) error {
 	if err2 != nil {
 		return err2
 	}
-	if SMTPServer == "" && SMTPAccount == "" {
+	if SMTPServer == "" || SMTPAccount == "" {
 		return fmt.Errorf("SMTP 服务器未配置")
 	}
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
@@ -48,8 +48,8 @@ func SendEmail(subject string, receiver string, content string) error {
 	var err error
 	if SMTPPort == 465 || SMTPSSLEnabled {
 		tlsConfig := &tls.Config{
-			InsecureSkipVerify: true,
-			ServerName:         SMTPServer,
+			MinVersion: tls.VersionTLS12,
+			ServerName: SMTPServer,
 		}
 		conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", SMTPServer, SMTPPort), tlsConfig)
 		if err != nil {

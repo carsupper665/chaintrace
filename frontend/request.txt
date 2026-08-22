@@ -6,7 +6,9 @@ ChainTrace Frontend - Runtime and Module Requirements
 Node.js >= 22.13.0
 npm >= 10
 
-Go, Python, and a local database are not required to run the frontend.
+Go, Python, and a local database are not required to build the frontend, but
+the running application is unusable without the Go backend: sign-in and every
+Investigation feature are backend-owned.
 
 
 2. Install all frontend modules
@@ -62,29 +64,42 @@ npm run build
 npm run start
 
 
-7. Optional backend connection
-------------------------------
-The frontend can start without the Go backend.
+7. Backend connection
+---------------------
+CHAINTRACE_BACKEND_URL=http://localhost:7794
 
-To enable the real AI Agent chat connection, configure:
+Copy .env.example to .env. Outside production an unset value falls back to
+http://localhost:7794, the Go API's default port; a production build requires
+it to be set explicitly.
 
-CHAINTRACE_BACKEND_URL=http://localhost:<GO_BACKEND_PORT>
+There is no public chain-data fallback and no mock Agent response: without a
+reachable Go backend the workspace redirects to /login.
 
-The Go backend must implement:
-
-POST /api/v1/agent/chat
-
-Without CHAINTRACE_BACKEND_URL, the chat middle API intentionally returns
-HTTP 503 and does not generate mock model responses.
+Backend setup, required environment variables and the login journey:
+../docs/local-development.md
 
 
-8. Middle API routes provided by the frontend
----------------------------------------------
-POST /api/middle/agent/chat
-GET  /api/middle/risk-score
-GET  /api/middle/investigation-metrics
-GET  /api/middle/transaction-graph
-POST /api/middle/anomaly-analysis
+8. BFF routes provided by the frontend
+--------------------------------------
+POST   /api/auth/login
+GET    /api/auth/me
+POST   /api/auth/logout
+GET    /login/callback
+
+GET    /api/investigations
+POST   /api/investigations
+GET    /api/investigations/{id}
+PATCH  /api/investigations/{id}
+DELETE /api/investigations/{id}
+POST   /api/investigations/{id}/analysis-runs
+GET    /api/investigations/{id}/analysis-runs/{runId}
+DELETE /api/investigations/{id}/analysis-runs/{runId}
+GET    /api/investigations/{id}/current-result
+GET    /api/investigations/{id}/graph
+GET    /api/investigations/{id}/conversation
+POST   /api/investigations/{id}/conversation
+
+Each proxies to the matching /api/v1/... route on the Go backend.
 
 Detailed request and response contracts:
-middle/README.md
+src/middle/README.md

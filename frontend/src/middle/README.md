@@ -1,163 +1,81 @@
-# Risk score middle layer
+# Middle layer
 
-The React UI only calls:
+The browser never calls the Go API or a chain data provider directly. Every
+domain read and write goes through a same-origin Next.js route under
+`app/api/`, which attaches the Owner's credential cookie as a bearer token and
+proxies to `/api/v1/*` on `CHAINTRACE_BACKEND_URL`
+(`investigation-backend.ts`). Backend status codes and machine-readable `code`
+values are preserved; the proxy never falls back to a public chain source or
+fabricates domain data.
 
-`GET /api/middle/risk-score?address=<wallet>&network=<network>`
+`*-contract.ts` holds the types and route constants. `*-client.ts` holds the
+browser-side client that validates responses and maps stable codes to display
+text. Neither layer computes domain values — risk scores, metrics and totals
+are backend-owned.
 
-Response contract:
+Everything is keyed by **Investigation ID**. There are no address-based
+endpoints; the old `/api/middle/risk-score`, `/api/middle/investigation-metrics`,
+`/api/middle/anomaly-analysis`, `/api/middle/transaction-graph` and
+`/api/middle/agent/chat` routes were removed with the Ethereum prototype.
 
-```json
-{
-  "address": "0x...",
-  "network": "Ethereum",
-  "score": 0,
-  "status": "pending",
-  "source": "default",
-  "updatedAt": null
-}
-```
+## Investigations, Analysis Runs and results
 
-- `score`: integer from 0 to 100.
-- `status`: `pending`, `ready`, or `unavailable`.
-- `source`: backend model/service identifier.
-- `updatedAt`: ISO-8601 time, or `null` before a score exists.
+`investigation-contract.ts` / `investigation-client.ts`
 
-No scoring logic is included. The backend owner should only implement
-`fetchRiskScoreFromBackend()` in `risk-score-provider.ts` and preserve this
-response contract. React components do not need to change.
+| Frontend route | Backend route |
+| --- | --- |
+| `GET/POST /api/investigations` | `/api/v1/investigations` |
+| `GET/PATCH/DELETE /api/investigations/{id}` | `/api/v1/investigations/{id}` |
+| `POST /api/investigations/{id}/analysis-runs` | start a run, `202` + run ID |
+| `GET/DELETE /api/investigations/{id}/analysis-runs/{runId}` | poll / cancel |
+| `GET /api/investigations/{id}/current-result` | current stable result |
 
-## Investigation metrics
-
-The UI also calls:
-
-`GET /api/middle/investigation-metrics?address=<wallet>&network=<network>`
-
-```json
-{
-  "address": "0x...",
-  "network": "Ethereum",
-  "relatedNodes": 0,
-  "totalFlow": 0,
-  "flowAsset": "",
-  "transactionCount": 0,
-  "status": "pending",
-  "source": "default",
-  "updatedAt": null
-}
-```
-
-No graph or transaction aggregation logic is included. The backend owner only
-implements `fetchInvestigationMetricsFromBackend()` in
-`investigation-metrics-provider.ts`.
+- `Investigation.status` is `待處理`, `分析中` or `已完成`. `network` is always
+  `TRON_MAINNET`.
+- Amounts are `ExactAmount` (`smallestUnit` string + `decimals` + `asset`) and
+  must never be coerced to a JavaScript `number`. Use `formatExactAmount`.
+- Scope is bounded client-side and server-side: Transfer Limit 1–5000 (default
+  500), Traversal Depth 1–4 (default 2).
+- `pollAnalysisRun` backs off from 1s up to 5s and treats a shared
+  `rate_limited` response as backpressure rather than a failed run.
+- Terminal run states are `completed`, `failed` and `cancelled`. A run missing
+  after a backend restart polls as `run_lost`; the client then reloads the
+  previous stable result and offers resubmission.
+- Stable codes handled here: `unauthorized`, `investigation_not_found`,
+  `invalid_tron_target`, `invalid_analysis_scope`,
+  `immutable_investigation_target`, `analysis_run_active`, `run_lost`,
+  `rate_limited`.
 
 ## Transaction graph
 
-The wallet-address confirmation form calls:
+`transaction-graph-contract.ts` / `transaction-graph-client.ts`
 
-`GET /api/middle/transaction-graph?address=<wallet>&network=Ethereum`
+`GET /api/investigations/{id}/graph?datasetId=&cursor=&pageSize=&anchor=`
 
-The middle layer first tries the project backend:
+- Every page is bound to one Analysis Dataset. A request against a Dataset that
+  is no longer current returns `stale_dataset`.
+- Nodes carry domain identity only; the backend never returns `x`, `y` or
+  `group`, and the client rejects a page that does. Layout is added in
+  `services/transactionGraphBrowser.ts`.
+- Edges are individual TRC20 Transfer events, identified by parent transaction
+  hash plus event identity, so several Transfers from one transaction stay
+  distinct.
+- `anchor` discloses more relationships from the same Dataset. It never calls a
+  chain provider, starts a run or changes the assessment.
 
-`GET {CHAINTRACE_BACKEND_URL}/api/v1/transaction-graph`
+## Conversation and Agent
 
-If `CHAINTRACE_BACKEND_URL` is not configured, Ethereum mainnet transactions
-are read from Blockscout and normalized into the same `nodes` and `edges`
-contract. The frontend contains no mock graph nodes or transactions.
+`conversation-contract.ts` / `conversation-client.ts`
 
-Clicking an unexpanded graph node calls the same endpoint with that node's
-address. The returned real transactions are de-duplicated and merged into the
-current graph. Already expanded nodes are cached in the current browser state
-and are not requested again.
+`GET/POST /api/investigations/{id}/conversation`
 
-Backend response shape:
-
-```json
-{
-  "address": "0x...",
-  "network": "Ethereum",
-  "nodes": [
-    {
-      "id": "0x...",
-      "address": "0x...",
-      "label": "0x1234…5678",
-      "type": "focus",
-      "x": 50,
-      "y": 50
-    }
-  ],
-  "edges": [
-    {
-      "id": "transaction-hash",
-      "from": "0x...",
-      "to": "0x...",
-      "value": 0.25,
-      "asset": "ETH",
-      "timestamp": "2026-07-26T00:00:00.000Z"
-    }
-  ],
-  "transactionCount": 1,
-  "totalFlow": 0.25,
-  "flowAsset": "ETH",
-  "source": "backend-service-name",
-  "updatedAt": "2026-07-26T00:00:00.000Z"
-}
-```
-
-## AI Agent chat
-
-The React UI sends messages only to:
-
-`POST /api/middle/agent/chat`
-
-The middle layer forwards the same request to the Go backend:
-
-`POST {CHAINTRACE_BACKEND_URL}/api/v1/agent/chat`
-
-```json
-{
-  "sessionId": "CT-2041",
-  "message": "追蹤這個地址的資金流向",
-  "investigation": {
-    "id": "CT-2041",
-    "address": null,
-    "network": "Ethereum"
-  }
-}
-```
-
-Expected backend response:
-
-```json
-{
-  "taskId": "task-123",
-  "message": "後端 Agent 的真實回覆",
-  "status": "accepted",
-  "createdAt": "2026-07-26T00:00:00.000Z"
-}
-```
-
-No LLM or simulated Agent response is generated by the frontend or middle
-layer. If `CHAINTRACE_BACKEND_URL` is absent or unreachable, the API returns
-HTTP 503.
-
-## Anomaly analysis
-
-After real transaction graph data is available, the UI sends it to:
-
-`POST /api/middle/anomaly-analysis`
-
-The middle layer forwards it to:
-
-`POST {CHAINTRACE_BACKEND_URL}/api/v1/anomaly-analysis`
-
-The backend response must contain `score`, `level`, `summary`, `reasons`,
-`interpretation`, `recommendations`, `source`, and `updatedAt` as defined in
-`anomaly-analysis-contract.ts`.
-
-For clickable per-node safety results, the backend may also return
-`nodeAssessments[]` with `nodeId`, `score`, `level`, `summary`, and `source`.
-Nodes without a backend assessment are displayed as `尚未評估`.
-
-No anomaly score, reason, summary, interpretation, or recommendation is
-generated in the frontend. Until the backend returns a real result, the UI
-shows a waiting/unavailable state and PDF export remains disabled.
+- Pagination walks **forward** in durable order: the first page is the oldest,
+  and each `nextCursor` discloses newer messages. Pages are appended, never
+  prepended.
+- Submitting requires an Owner-scoped `idempotencyKey`. Retrying with the same
+  key does not duplicate records.
+- The MVP configures no Agent provider. A successful submit responds `503` with
+  `{"code":"agent_unavailable","persisted":true,"messages":[…]}` — the user
+  message and a structured system event, both durably stored. That system event
+  is rendered as a system outcome, never as an Agent reply, and no mock reply is
+  generated anywhere in the frontend.

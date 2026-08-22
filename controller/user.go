@@ -2,16 +2,22 @@ package controller
 
 import (
 	"chaintrace/auth"
+	"chaintrace/middleware"
 	"chaintrace/model"
 	"chaintrace/model/store"
 	"chaintrace/utils"
+	"crypto/subtle"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/bytedance/gopkg/util/logger"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type loginRequest struct {
@@ -35,15 +41,71 @@ type VerifyTokenCache struct {
 }
 
 type EmailChallengeStore struct {
-	cache      map[string]VerifyLoginCache
-	tokenCache map[string]VerifyTokenCache
-	Mu         sync.RWMutex
+	cache               map[string]VerifyLoginCache
+	tokenCache          map[string]VerifyTokenCache
+	Mu                  sync.RWMutex
+	sendVerification    func(email, username, verificationURL string) error
+	frontendBaseURL     string
+	verificationBaseURL string
+	now                 func() time.Time
+	challengeTTL        time.Duration
+	exchangeTTL         time.Duration
+	// Password guessing is budgeted per Owner. Every login reaches this API from the
+	// frontend BFF, so the shared per-IP budget throttles the whole deployment instead
+	// of the account actually under attack.
+	loginAttempts *middleware.RateLimiter
 }
 
-func NewChallengeStore() *EmailChallengeStore {
+const (
+	loginAttemptsPerWindow = 5
+	loginAttemptWindow     = int64(15 * 60)
+)
+
+type AuthOptions struct {
+	SendVerification func(email, username, verificationURL string) error
+	FrontendBaseURL  string
+	VerifyBaseURL    string
+	Now              func() time.Time
+	ChallengeTTL     time.Duration
+	ExchangeTTL      time.Duration
+}
+
+func NewChallengeStore(options ...AuthOptions) *EmailChallengeStore {
+	option := AuthOptions{}
+	if len(options) > 0 {
+		option = options[0]
+	}
+	if option.SendVerification == nil {
+		option.SendVerification = sendVerificationEmail
+	}
+	if option.FrontendBaseURL == "" {
+		option.FrontendBaseURL = utils.FrontEndUrl
+	}
+	if option.VerifyBaseURL == "" {
+		port := utils.GetEnvString("PORT", "3000")
+		option.VerifyBaseURL = utils.GetEnvString("LOGIN_VERIFY_BASE_URL", "http://localhost:"+port)
+	}
+	if option.Now == nil {
+		option.Now = time.Now
+	}
+	if option.ChallengeTTL == 0 {
+		option.ChallengeTTL = 5 * time.Minute
+	}
+	if option.ExchangeTTL == 0 {
+		option.ExchangeTTL = 3 * time.Minute
+	}
+	loginAttempts := &middleware.RateLimiter{}
+	loginAttempts.Init(time.Duration(loginAttemptWindow) * time.Second)
 	return &EmailChallengeStore{
-		cache:      make(map[string]VerifyLoginCache),
-		tokenCache: make(map[string]VerifyTokenCache),
+		loginAttempts:       loginAttempts,
+		cache:               make(map[string]VerifyLoginCache),
+		tokenCache:          make(map[string]VerifyTokenCache),
+		sendVerification:    option.SendVerification,
+		frontendBaseURL:     option.FrontendBaseURL,
+		verificationBaseURL: option.VerifyBaseURL,
+		now:                 option.Now,
+		challengeTTL:        option.ChallengeTTL,
+		exchangeTTL:         option.ExchangeTTL,
 	}
 }
 
@@ -75,7 +137,7 @@ func (s *EmailChallengeStore) getEmail(id string) (string, bool) {
 	return v.Email, true
 }
 
-func (s *EmailChallengeStore) valid(id string, inpCode string, hashEmail string) bool {
+func (s *EmailChallengeStore) valid(id string, inpCode string) bool {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
 	v, ok := s.cache[id]
@@ -84,10 +146,9 @@ func (s *EmailChallengeStore) valid(id string, inpCode string, hashEmail string)
 	}
 
 	ca := v.CreateAt
-	expired := time.Now().After(ca.Add(v.Exp))
-	isCode := inpCode == v.Email
-	validHash := auth.VP(hashEmail, v.Email)
-	if expired && !isCode && !validHash {
+	expired := s.now().After(ca.Add(v.Exp))
+	isCode := subtle.ConstantTimeCompare([]byte(inpCode), []byte(v.Code)) == 1
+	if expired || !isCode {
 		return false
 	}
 	delete(s.cache, id)
@@ -95,26 +156,29 @@ func (s *EmailChallengeStore) valid(id string, inpCode string, hashEmail string)
 	return true
 }
 
-func (s *EmailChallengeStore) CreateLoginChallenge(id, email string) string {
+func (s *EmailChallengeStore) CreateLoginChallenge(id, email string) (string, error) {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
 	if v, ok := s.cache[id]; ok {
-		isExpired := time.Now().After(v.CreateAt.Add(v.Exp))
+		isExpired := s.now().After(v.CreateAt.Add(v.Exp))
 		if !isExpired {
-			return v.Code
+			return v.Code, nil
 		}
 		delete(s.cache, id)
 	}
 
-	code := utils.GetRandomIntString(16)
+	code, err := utils.SecureRandomIntString(16)
+	if err != nil {
+		return "", err
+	}
 	s.cache[id] = VerifyLoginCache{
 		Code:     code,
 		Email:    email,
-		CreateAt: time.Now(),
-		Exp:      5 * time.Minute,
+		CreateAt: s.now(),
+		Exp:      s.challengeTTL,
 	}
 
-	return code
+	return code, nil
 }
 
 func (s *EmailChallengeStore) setVerifyToken(id, code, email string) {
@@ -124,8 +188,8 @@ func (s *EmailChallengeStore) setVerifyToken(id, code, email string) {
 	s.tokenCache[id] = VerifyTokenCache{
 		AuthToken: code,
 		UserEmail: email,
-		Exp:       3 * time.Minute,
-		CreateAt:  time.Now(),
+		Exp:       s.exchangeTTL,
+		CreateAt:  s.now(),
 	}
 }
 
@@ -133,7 +197,6 @@ func (s *EmailChallengeStore) UrlVerifyLogin(c *gin.Context) {
 	//clientIP := c.ClientIP() // for login Attempt Record
 
 	code := c.Query("code")
-	hashEmail := c.Query("eh")
 	id := c.Query("id")
 
 	email, ok := s.getEmail(id)
@@ -141,7 +204,7 @@ func (s *EmailChallengeStore) UrlVerifyLogin(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "not found"})
 		return
 	}
-	isValid := s.valid(id, code, hashEmail)
+	isValid := s.valid(id, code)
 
 	if !isValid {
 
@@ -149,13 +212,25 @@ func (s *EmailChallengeStore) UrlVerifyLogin(c *gin.Context) {
 		return
 	}
 
-	frontend := utils.GetEnvString("FRONTEND_BASE_URL", "http://localhost:3000")
-	authCode := utils.GetRandomString(32)
-	uri := fmt.Sprintf("%s/login/callback?code=%s?=id%s", frontend, authCode, id)
+	frontend := s.frontendBaseURL
+	authCode, err := utils.SecureRandomString(32)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "message": "Internal server error"})
+		return
+	}
+	callbackURL, err := url.Parse(strings.TrimRight(frontend, "/") + "/login/callback")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "message": "Internal server error"})
+		return
+	}
+	query := callbackURL.Query()
+	query.Set("code", authCode)
+	query.Set("id", id)
+	callbackURL.RawQuery = query.Encode()
 
 	s.setVerifyToken(id, authCode, email)
 
-	c.Redirect(http.StatusFound, uri)
+	c.Redirect(http.StatusFound, callbackURL.String())
 	return
 }
 
@@ -174,18 +249,16 @@ func (s *EmailChallengeStore) challenge(id, code, ip string) (string, int8, erro
 		return "", authErr, fmt.Errorf("not found")
 	}
 	ca := v.CreateAt
-	expired := time.Now().After(ca.Add(v.Exp))
+	expired := s.now().After(ca.Add(v.Exp))
 	if expired {
 		delete(s.tokenCache, id)
 		s.Mu.Unlock()
 		return "", authErr, fmt.Errorf("expired")
 	}
-	if code != v.AuthToken {
-		delete(s.tokenCache, id)
+	if subtle.ConstantTimeCompare([]byte(code), []byte(v.AuthToken)) != 1 {
 		s.Mu.Unlock()
 		return "", authErr, fmt.Errorf("invalid verification code")
 	}
-	logger.Debugf("Verification code valid for id: %s, email: %s", id, v.UserEmail)
 	email := v.UserEmail
 	delete(s.tokenCache, id)
 	s.Mu.Unlock()
@@ -210,7 +283,8 @@ func (s *EmailChallengeStore) ExchangeToken(c *gin.Context) {
 	token, errCode, err := s.challenge(id, code, ip)
 	if err != nil {
 		if errCode == serverErr {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Server error"})
+			c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "message": "Internal server error"})
+			return
 		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -233,24 +307,29 @@ func (s *EmailChallengeStore) ChallengeLogin(c *gin.Context) {
 	case req.Email != "":
 		user, err = model.GetUserByEmail(req.Email)
 	case req.Username != "":
-		user, err = model.GetUserByEmail(req.Username)
+		user, err = model.GetUserByUsername(req.Username)
 	default:
 		c.JSON(400, gin.H{"error": "Email or Username is required"})
 		return
 	}
 
 	if err != nil {
-		if err.Error() == "record not found" {
-			c.JSON(401, gin.H{"error": "User not found"})
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusUnauthorized, gin.H{"code": "invalid_credentials", "message": "Invalid credentials"})
 		} else {
-			c.JSON(500, gin.H{"error": "Internal server error"})
+			c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "message": "Internal server error"})
 		}
 		return
 	}
 
-	v := auth.VP(req.Password+user.Salt, user.Password)
+	if !s.loginAttempts.Request("login:"+strconv.FormatUint(uint64(user.ID), 10), loginAttemptsPerWindow, loginAttemptWindow) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"code": "rate_limited", "message": "Too many requests"})
+		return
+	}
+
+	v := auth.VP(user.Password, req.Password+user.Salt)
 	if !v {
-		c.JSON(401, gin.H{"error": "Invalid password"})
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "invalid_credentials", "message": "Invalid credentials"})
 		return
 	}
 
@@ -264,118 +343,60 @@ func (s *EmailChallengeStore) ChallengeLogin(c *gin.Context) {
 }
 
 func (s *EmailChallengeStore) VerificationEmail(c *gin.Context, email, id, username string) error {
-	hashEmail, err := auth.P2H(email)
+	code, err := s.CreateLoginChallenge(id, email)
 	if err != nil {
 		return err
 	}
-	code := s.CreateLoginChallenge(id, email)
-	port := utils.GetEnvString("PORT", "3000")
-	defaultUrl := utils.GetEnvString("LOGIN_VERIFY_BASE_URL", "http://localhost:"+port)
-	url := fmt.Sprintf("%s/Authentication/verify?code=%s&eh=%s&id=%s", defaultUrl, code, hashEmail, id)
-	htmlMsg := fmt.Sprintf(
-		`<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Verification Link</title>
-  <style>
-    body {
-      margin: 0;
-      padding: 24px 12px;
-      font-family: "Segoe UI", "Noto Sans TC", Arial, sans-serif;
-      line-height: 1.6;
-      background: radial-gradient(circle at center, #1a1a20 0%%, #0a0a0c 100%%);
-      color: #e5e7eb;
-    }
-    .container {
-      max-width: 620px;
-      margin: 0 auto;
-      padding: 24px;
-      border-radius: 10px;
-      background: rgba(20, 20, 25, 0.92);
-      border: 1px solid #333333;
-      box-shadow: 0 0 24px rgba(0, 0, 0, 0.45), inset 0 0 16px rgba(24, 160, 88, 0.08);
-    }
-    .title {
-      margin: 0 0 14px 0;
-      font-size: 20px;
-      color: #18a058;
-      letter-spacing: 0.4px;
-      font-weight: 700;
-    }
-    p {
-      margin: 10px 0;
-      color: #cbd5e1;
-    }
-    .verify-btn {
-      display: inline-block;
-      margin: 10px 0 4px 0;
-      padding: 10px 16px;
-      border-radius: 6px;
-      border: 1px solid #18a058;
-      background: #18a058;
-      color: #ffffff !important;
-      text-decoration: none;
-      font-weight: 700;
-      letter-spacing: 0.4px;
-    }
-    .muted {
-      color: #9ca3af;
-      font-size: 13px;
-      margin-top: 14px;
-    }
-    .mono {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12px;
-      color: #cbd5e1;
-      word-break: break-all;
-      background: rgba(0, 0, 0, 0.25);
-      border: 1px solid #2b2b2b;
-      padding: 10px;
-      border-radius: 6px;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1 class="title">MC-SERVER Verification</h1>
-    <p>Hello %s,</p>
-    <p>Click the button below to verify your login:</p>
-
-    <p>
-      <a class="verify-btn" href="%s" target="_blank" rel="noopener noreferrer">
-        VERIFY LOGIN
-      </a>
-    </p>
-
-    <p>This link will expire in <strong>5 minutes</strong>.</p>
-
-    <p class="muted">If the button does not work, copy this URL:</p>
-    <p class="mono">%s</p>
-
-    <p>If you did not request this, please ignore this email.</p>
-    <p>Thank you,<br>The %s Team</p>
-  </div>
-</body>
-</html>`,
-		username,
-		url,
-		url,
-		"chainTrace",
-	)
-
-	err = utils.SendEmail(
-		"Login Verification Code",
-		email, // 使用者的 email
-		htmlMsg,
-	)
-
+	verificationURL, err := url.Parse(strings.TrimRight(s.verificationBaseURL, "/") + "/Authentication/verify")
 	if err != nil {
+		return err
+	}
+	query := verificationURL.Query()
+	query.Set("code", code)
+	query.Set("id", id)
+	verificationURL.RawQuery = query.Encode()
+	err = s.sendVerification(email, username, verificationURL.String())
+
+	if err != nil && utils.SysLog != nil {
 		utils.SysLog.Errorf("Login Verification Code failed: %v, User: %s, Request ID: %s", err, username, c.Request.Context().Value(utils.RequestIdKey))
 	}
 
 	return err
+}
+
+func sendVerificationEmail(email, username, verificationURL string) error {
+	htmlMsg := fmt.Sprintf(
+		`<p>Hello %s,</p><p><a href="%s">Verify login</a></p><p>%s</p>`,
+		username,
+		verificationURL,
+		verificationURL,
+	)
+	return utils.SendEmail("Login Verification Code", email, htmlMsg)
+}
+
+func CurrentUser(c *gin.Context) {
+	user, err := model.GetUserByID(c.GetUint("user_id"))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "unauthorized", "message": "Unauthorized"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"id":           user.ID,
+		"username":     user.Username,
+		"display_name": user.DisplayName,
+		"email":        user.Email,
+		"role":         user.Role,
+	})
+}
+
+func Logout(c *gin.Context) {
+	token := c.GetString("auth_token")
+	userID := c.GetUint("user_id")
+	auth.RTS.Add(token, strconv.FormatUint(uint64(userID), 10), time.Now().Add(utils.TokenExpireSecond))
+	if err := auth.RTS.ClearEvent(); err != nil && utils.SysLog != nil {
+		utils.SysLog.Errorf("failed to prune revoked token registry: %v", err)
+	}
+	c.Status(http.StatusNoContent)
 }
 
 type RegReq struct {
@@ -402,7 +423,11 @@ func RegisterNewUser(c *gin.Context) {
 		return
 	}
 
-	salt := utils.GetRandomString(16)
+	salt, err := utils.SecureRandomString(16)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Fail to Create User"})
+		return
+	}
 	hashPassword, err := auth.P2H(req.Password + salt)
 	requestId := c.Request.Context().Value(utils.RequestIdKey)
 

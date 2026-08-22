@@ -1,26 +1,49 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import test from "node:test";
 
 async function render() {
+  const backend = createServer((_request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(
+      JSON.stringify({
+        id: 7,
+        username: "render-owner",
+        display_name: "Rendered Owner",
+        email: "render@example.com",
+        role: 1,
+      }),
+    );
+  });
+  await new Promise((resolve) => backend.listen(0, "127.0.0.1", resolve));
+  const address = backend.address();
+  process.env.CHAINTRACE_BACKEND_URL = `http://127.0.0.1:${address.port}`;
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
-  return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
-    }),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
+  try {
+    return await worker.fetch(
+      new Request("http://localhost/", {
+        headers: {
+          accept: "text/html",
+          cookie: "chaintrace_credential=render.jwt",
+        },
+      }),
+      {
+        ASSETS: {
+          fetch: async () => new Response("Not found", { status: 404 }),
+        },
       },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
+      {
+        waitUntil() {},
+        passThroughOnException() {},
+      },
+    );
+  } finally {
+    await new Promise((resolve) => backend.close(resolve));
+  }
 }
 
 test("server-renders the ChainTrace investigation workspace", async () => {
@@ -31,9 +54,10 @@ test("server-renders the ChainTrace investigation workspace", async () => {
   const html = await response.text();
   assert.match(html, /<title>ChainTrace \| AI 區塊鏈異常調查<\/title>/i);
   assert.match(html, /調查工作區/);
-  assert.match(html, /INVESTIGATION AGENT/);
-  assert.match(html, /交易關係圖譜/);
-  assert.match(html, /異常分析摘要/);
+  assert.match(html, /正在載入調查工作區/);
+  assert.match(html, /TRON mainnet/);
+  assert.match(html, /Rendered Owner/);
+  assert.doesNotMatch(html, /CT-20(?:17|29|38|41)|ETH 錢包追蹤|Ethereum|Bitcoin/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
@@ -43,7 +67,6 @@ test("keeps the route entry thin and implementation under src", async () => {
     feature,
     styles,
     architecture,
-    storage,
     controller,
     analysis,
     agentPanel,
@@ -57,10 +80,6 @@ test("keeps the route entry thin and implementation under src", async () => {
     ),
     readFile(new URL("../src/styles/index.css", import.meta.url), "utf8"),
     readFile(new URL("../ARCHITECTURE.md", import.meta.url), "utf8"),
-    readFile(
-      new URL("../src/services/investigationStorage.ts", import.meta.url),
-      "utf8",
-    ),
     readFile(new URL("../src/hooks/useChainTrace.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/ui/AnalysisPanel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/ui/AgentPanel.tsx", import.meta.url), "utf8"),
@@ -70,7 +89,7 @@ test("keeps the route entry thin and implementation under src", async () => {
     ),
   ]);
 
-  assert.match(page, /<ChainTraceApp \/>/);
+  assert.match(page, /<ChainTraceApp owner=\{owner\} \/>/);
   assert.doesNotMatch(page, /useState|useEffect|fetch\(/);
   assert.match(feature, /useChainTrace/);
   assert.match(feature, /WorkspacePanel/);
@@ -78,17 +97,13 @@ test("keeps the route entry thin and implementation under src", async () => {
   assert.match(feature, /AnalysisPanel/);
   assert.match(styles, /@import "\.\/chaintrace\.css"/);
   assert.match(architecture, /src\/middle/);
-  assert.match(storage, /localStorage/);
-  assert.match(storage, /STORAGE_VERSION/);
-  assert.match(controller, /match\.metrics\.status === "ready"/);
-  assert.match(controller, /match\.risk\.status === "ready"/);
   assert.match(controller, /chaintrace-analysis-collapsed/);
-  assert.match(controller, /setIsAnalysisCollapsed\(storedAnalysisCollapsed === "true"\)/);
   assert.match(controller, /chaintrace-sidebar-collapsed/);
   assert.match(analysis, /dateMarkers\.map/);
   assert.doesNotMatch(analysis, /!ui\.isGraphFullscreen && !selectedDate/);
   assert.match(analysis, /edge\.from === edge\.to/);
-  assert.match(analysis, /x: \(from\.x \+ to\.x\) \/ 2/);
+  assert.match(analysis, /const reach = 0\.46 \+ 0\.08 \* \(index % 5\)/);
+  assert.match(analysis, /x: from\.x \+ \(to\.x - from\.x\) \* reach/);
   assert.match(analysis, /relationshipMarkers\.get\(pair\)/);
   assert.match(analysis, /relationshipMarkers/);
   assert.match(analysis, /dateLabel/);
@@ -107,13 +122,12 @@ test("keeps the route entry thin and implementation under src", async () => {
   assert.match(analysis, /graph-filter-summary/);
   assert.match(analysis, /graph-clear-filter/);
   assert.match(analysis, /hasActiveGraphFilters/);
-  assert.match(analysis, /graph-retry-button/);
   assert.match(analysis, /event\.key === "0"/);
   assert.match(analysis, /directionFilter/);
   assert.match(analysis, /hiddenGraphGroups/);
   assert.match(analysis, /!isCompactGraph && dateMarkers\.map/);
   assert.doesNotMatch(analysis, /title=\{node\.address\}/);
-  assert.match(analysis, /summarizeFlow/);
+  assert.doesNotMatch(analysis, /summarizeFlow|reduce\(\(sum, edge\)/);
   assert.match(agentPanel, /className="mini-stat-value"/);
   assert.match(agentPanel, /className="mini-stat total-flow-stat"/);
   assert.match(agentPanel, /className="total-flow-value"/);

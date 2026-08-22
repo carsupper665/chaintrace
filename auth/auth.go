@@ -32,6 +32,9 @@ func VP(hashedPassword string, password string) bool {
 }
 
 func GenJWT(userID uint, ip string) (string, error) {
+	if userID == 0 || strings.TrimSpace(utils.JWTSecret) == "" {
+		return "", ErrInvalidToken
+	}
 	now := time.Now()
 
 	expireAt := now.Add(utils.TokenExpireSecond)
@@ -62,32 +65,38 @@ func VerifyJWT(tokenString, ip string) (userID uint, err error) {
 	if tokenString == "" {
 		return 0, ErrEmptyToken
 	}
+	if strings.TrimSpace(utils.JWTSecret) == "" {
+		return 0, ErrInvalidToken
+	}
 	claims := &JWTClaims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		// 防止 alg 被竄改，例如 none / RS256 混淆攻擊
 		if token.Method != jwt.SigningMethodHS256 {
 			return nil, ErrInvalidToken
 		}
 		return []byte(utils.JWTSecret), nil
-	})
+	},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer("chaintrace"),
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuedAt(),
+	)
 	if err != nil {
 		return 0, err
 	}
 	if token == nil || !token.Valid {
 		return 0, ErrInvalidToken
 	}
-	if claims.Issuer != "chaintrace" {
+	if claims.Issuer != "chaintrace" || claims.IssuedAt == nil || claims.NotBefore == nil || claims.ExpiresAt == nil {
 		return 0, ErrInvalidToken
 	}
 
-	if claims.UserID == 0 {
+	if claims.UserID == 0 || claims.Subject != strconv.FormatUint(uint64(claims.UserID), 10) {
 		return 0, ErrInvalidToken
 	}
 
-	// 如果你產 token 時有寫入 IP，這裡就可以驗證
-	if claims.IP != "" && ip != "" && claims.IP != ip {
-		return 0, ErrInvalidToken
-	}
+	// claims.IP is kept as an issuance audit trail but deliberately not compared:
+	// every request reaches this API from the frontend BFF, so it records the BFF's
+	// address rather than the Owner's and would only reject valid credentials.
 
 	return claims.UserID, nil
 }

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -72,15 +73,42 @@ func (l *RateLimiter) Request(key string, maxRequestNum int, duration int64) boo
 	return true
 }
 
-func IpRateLimiter(maxRequestNum int, duration int64) func(c *gin.Context) {
+// keyedRateLimiter budgets requests per key. A non-positive budget disables it.
+func keyedRateLimiter(maxRequestNum int, duration int64, key func(c *gin.Context) string) gin.HandlerFunc {
+	if maxRequestNum <= 0 {
+		return func(c *gin.Context) { c.Next() }
+	}
 	rl := &RateLimiter{}
 	rl.Init(time.Duration(duration) * time.Second)
 
 	return func(c *gin.Context) {
-		ip := "" + c.ClientIP()
-		if !rl.Request(ip, maxRequestNum, duration) {
-			c.AbortWithStatus(http.StatusTooManyRequests)
+		if !rl.Request(key(c), maxRequestNum, duration) {
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"code":    "rate_limited",
+				"message": "Too many requests",
+			})
+			return
 		}
 		c.Next()
 	}
+}
+
+// IpRateLimiter budgets unauthenticated traffic per client IP.
+func IpRateLimiter(maxRequestNum int, duration int64) gin.HandlerFunc {
+	return keyedRateLimiter(maxRequestNum, duration, func(c *gin.Context) string {
+		return "ip:" + c.ClientIP()
+	})
+}
+
+// OwnerRateLimiter budgets authenticated traffic per Owner. Every protected
+// request arrives from the frontend BFF process, so all Owners share one client
+// IP and a per-IP budget would throttle the whole deployment. Register it after
+// ValidateJWT; without an Owner in context it falls back to the client IP.
+func OwnerRateLimiter(maxRequestNum int, duration int64) gin.HandlerFunc {
+	return keyedRateLimiter(maxRequestNum, duration, func(c *gin.Context) string {
+		if ownerID := c.GetUint("user_id"); ownerID != 0 {
+			return "owner:" + strconv.FormatUint(uint64(ownerID), 10)
+		}
+		return "ip:" + c.ClientIP()
+	})
 }

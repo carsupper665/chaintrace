@@ -1,7 +1,35 @@
+import { useEffect, useRef } from "react";
 import type { ChainTraceController } from "@/src/hooks/useChainTrace";
 import { getRiskTone } from "@/src/utils/riskTone";
+import type { Owner } from "@/src/auth/backend";
+import { formatExactAmount } from "@/src/middle/investigation-client";
 
-export function WorkspacePanel({ ui }: { ui: ChainTraceController }) {
+export function WorkspacePanel({
+  ui,
+  owner,
+}: {
+  ui: ChainTraceController;
+  owner: Owner;
+}) {
+  const ownerName = owner.display_name?.trim() || owner.username;
+  const initials = ownerName.slice(0, 2).toUpperCase();
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const { isSidebarCollapsed, toggleSidebarPin } = ui;
+
+  useEffect(() => {
+    function focusSearch(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "k") {
+        return;
+      }
+      event.preventDefault();
+      if (isSidebarCollapsed) toggleSidebarPin();
+      window.requestAnimationFrame(() => searchInputRef.current?.focus());
+    }
+
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, [isSidebarCollapsed, toggleSidebarPin]);
+
   return (
     <aside
       className="workspace-panel"
@@ -28,7 +56,8 @@ export function WorkspacePanel({ ui }: { ui: ChainTraceController }) {
         <button
           className="icon-button add-button"
           aria-label="新增調查任務"
-          onClick={ui.createInvestigation}
+          onClick={() => void ui.createInvestigation()}
+          disabled={ui.isWorkspaceMutating}
         >
           ＋
         </button>
@@ -37,10 +66,11 @@ export function WorkspacePanel({ ui }: { ui: ChainTraceController }) {
       <label className="search-box">
         <span>⌕</span>
         <input
+          ref={searchInputRef}
           value={ui.search}
           onChange={(event) => ui.setSearch(event.target.value)}
-          placeholder="搜尋案例或地址"
-          aria-label="搜尋案例或地址"
+          placeholder="搜尋調查或 TRON 地址"
+          aria-label="搜尋調查或 TRON 地址"
         />
         <kbd>⌘ K</kbd>
       </label>
@@ -48,19 +78,39 @@ export function WorkspacePanel({ ui }: { ui: ChainTraceController }) {
       <div className="section-label">
         <span>調查案例</span>
         <strong>{ui.investigations.length}</strong>
+        <button
+          type="button"
+          className="workspace-reload-button"
+          onClick={() => void ui.reloadInvestigations()}
+          disabled={ui.isWorkspaceLoading}
+        >
+          {ui.isWorkspaceLoading ? "載入中" : "重新載入"}
+        </button>
       </div>
 
       <nav className="investigation-list" aria-label="調查任務">
+        {!ui.isWorkspaceLoading && ui.filtered.length === 0 && (
+          <div className="investigation-empty-state">
+            <strong>
+              {ui.search ? "找不到符合的調查" : "尚無調查紀錄"}
+            </strong>
+            <span>
+              {ui.search
+                ? "請調整標題或 TRON 地址關鍵字。"
+                : "新增第一筆調查，紀錄會由後端保存。"}
+            </span>
+          </div>
+        )}
         {ui.filtered.map((item) => (
           <button
             key={item.id}
             className={`investigation-item ${
               ui.activeId === item.id ? "active" : ""
             }`}
-            onClick={() => ui.setActiveId(item.id)}
+            onClick={() => void ui.setActiveId(item.id)}
             onContextMenu={(event) => {
               event.preventDefault();
-              ui.setActiveId(item.id);
+              void ui.setActiveId(item.id);
               ui.setContextMenu({
                 id: item.id,
                 x: Math.min(event.clientX, window.innerWidth - 190),
@@ -84,32 +134,54 @@ export function WorkspacePanel({ ui }: { ui: ChainTraceController }) {
             <span className="investigation-copy">
               <strong>{item.title}</strong>
               <small>
-                {item.address || "尚未指定地址"} · {item.network}
+                {item.address || "尚未指定地址"} · TRON
               </small>
             </span>
-            {item.risk > 0 && (
+            {typeof item.risk === "number" ? (
               <span className={`risk-pill risk-${getRiskTone(item.risk)}`}>
                 {item.risk}
+              </span>
+            ) : item.currentResult ? (
+              <span className="risk-pill risk-pending">證據不足</span>
+            ) : null}
+            {item.currentResult && (
+              <span className="investigation-result-summary">
+                {item.transactionCount ?? "—"} Transfer · {item.relatedNodes ?? "—"} 地址
+                {item.totalFlow && (
+                  <small>
+                    {formatExactAmount(item.totalFlow)} {item.totalFlow.asset}
+                  </small>
+                )}
               </span>
             )}
           </button>
         ))}
       </nav>
+      {ui.workspaceError && (
+        <div className="workspace-error" role="alert">
+          {ui.workspaceError}
+        </div>
+      )}
 
       <div className="workspace-footer">
         <div className="system-status">
-          <span className="pulse-dot" />
+          <span className="network-mark">T</span>
           <div>
-            <strong>分析服務正常</strong>
-            <small>Ethereum · Bitcoin</small>
+            <strong>支援網路</strong>
+            <small>TRON mainnet · TRC20 USDT</small>
           </div>
         </div>
         <div className="user-card">
-          <span className="avatar">SL</span>
-          <span>
-            <strong>shlee</strong>
-            <small>研究分析員</small>
+          <span className="avatar">{initials}</span>
+          <span className="owner-copy">
+            <strong>{ownerName}</strong>
+            <small>@{owner.username}</small>
           </span>
+          <form action="/api/auth/logout" method="post">
+            <button className="logout-button" type="submit">
+              登出
+            </button>
+          </form>
         </div>
       </div>
       {!ui.isSidebarCollapsed && (
