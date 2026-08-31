@@ -1,0 +1,27 @@
+{
+  "status": "incomplete",
+  "id": "int_truncated",
+  "model": "gemini-3.6-flash",
+  "output_text": "### 範圍聲明\n本次分析未涵蓋完整範圍。目標地址 TSmokeTestAddress0",
+  "steps": [
+    {
+      "type": "thought",
+      "signature": "sig"
+    },
+    {
+      "type": "model_output",
+      "content": [
+        {
+          "type": "text",
+          "text": "### 範圍聲明\n本次分析未涵蓋完整範圍。目標地址 TSmokeTestAddress0"
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "total_input_tokens": 1559,
+    "total_output_tokens": 188,
+    "total_thought_tokens": 1008,
+    "total_tokens": 2755
+  }
+}

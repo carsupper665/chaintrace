@@ -4,3 +4,15 @@ logs/*
 .vscode/*
 *.exe
 DB.db
+
+# Python agent
+agent/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+agent/.env
+
+# Scratch notes and ad-hoc API probes. api.txt in particular has held a live
+# provider key pasted from the Gemini console — it must never be committed.
+.scratch/
+api.txt

@@ -5,6 +5,7 @@ import { useChainTrace } from "@/src/hooks/useChainTrace";
 import { AgentPanel } from "@/src/ui/AgentPanel";
 import { AnalysisPanel } from "@/src/ui/AnalysisPanel";
 import { CaseDialogs } from "@/src/ui/CaseDialogs";
+import { CommandBar } from "@/src/ui/CommandBar";
 import { WorkspacePanel } from "@/src/ui/WorkspacePanel";
 import type { Owner } from "@/src/auth/backend";
 
@@ -59,6 +60,16 @@ export function ChainTraceApp({ owner }: { owner: Owner }) {
               <span className="plus-glyph" aria-hidden="true" />
               {ui.isWorkspaceMutating ? "建立中…" : "新增調查"}
             </button>
+          )}
+          {!ui.isWorkspaceLoading && (
+            <>
+              {ui.conversationError && (
+                <div className="conversation-error" role="alert">
+                  {ui.conversationError}
+                </div>
+              )}
+              <CommandBar ui={ui} />
+            </>
           )}
         </section>
       )}

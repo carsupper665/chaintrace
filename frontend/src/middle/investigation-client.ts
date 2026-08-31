@@ -159,6 +159,10 @@ function normalizeInvestigation(result: Investigation): Investigation {
         ? result.transactionCount
         : null,
     currentResult,
+    activeRun:
+      typeof result.activeRun === "string" && result.activeRun
+        ? result.activeRun
+        : null,
   };
 }
 
@@ -208,6 +212,7 @@ export function mergeCurrentAnalysisResult(
     transactionCount: result.metrics.transferCount,
     targetLocked: true,
     currentResult: resultId,
+    activeRun: null,
     updatedAt: result.assessment.updatedAt,
   };
 }
@@ -550,6 +555,65 @@ export function createAnalysisRunner(
       }
     | undefined;
 
+  // follow polls one run to its terminal state and loads whatever it published.
+  // start() and attach() share it because who created the run changes nothing
+  // about how it is watched.
+  async function follow(
+    investigationId: string,
+    runId: string,
+    onProgress: ((run: AnalysisRunProgress) => void) | undefined,
+    controller: AbortController,
+  ): Promise<AnalysisFlowResult> {
+    let run: AnalysisRun;
+    try {
+      run = await pollAnalysisRun(
+        investigationId,
+        runId,
+        onProgress,
+        fetchImpl,
+        intervalMilliseconds,
+        controller.signal,
+      );
+    } catch (error) {
+      if (
+        error instanceof InvestigationClientError &&
+        error.code === "run_lost"
+      ) {
+        return { outcome: "run_lost" as const, investigationId, runId };
+      }
+      throw error;
+    }
+    if (run.status === "failed") {
+      throw new AnalysisRunClientError(run.errorCode || "ANALYSIS_FAILED");
+    }
+    if (run.status === "cancelled") {
+      return { outcome: "cancelled" as const, run };
+    }
+    return {
+      outcome: "completed" as const,
+      run,
+      result: await getCurrentAnalysisResult(
+        investigationId,
+        fetchImpl,
+        controller.signal,
+      ),
+    };
+  }
+
+  function track(
+    investigationId: string,
+    controller: AbortController,
+    promise: Promise<AnalysisFlowResult>,
+    runId?: string,
+  ) {
+    active = { investigationId, controller, promise, runId };
+    const release = () => {
+      if (active?.promise === promise) active = undefined;
+    };
+    void promise.then(release, release);
+    return promise;
+  }
+
   function start(
     investigationId: string,
     scope: AnalysisScopeInput = {},
@@ -573,59 +637,33 @@ export function createAnalysisRunner(
         await cancelAnalysisRun(investigationId, started.id, fetchImpl);
       }
       onProgress?.(started);
-      let run: AnalysisRun;
-      try {
-        run = await pollAnalysisRun(
-          investigationId,
-          started.id,
-          onProgress,
-          fetchImpl,
-          intervalMilliseconds,
-          controller.signal,
-        );
-      } catch (error) {
-        if (
-          error instanceof InvestigationClientError &&
-          error.code === "run_lost"
-        ) {
-          return {
-            outcome: "run_lost" as const,
-            investigationId,
-            runId: started.id,
-          };
-        }
-        throw error;
-      }
-      if (run.status === "failed") {
-        throw new AnalysisRunClientError(run.errorCode || "ANALYSIS_FAILED");
-      }
-      if (run.status === "cancelled") {
-        return { outcome: "cancelled" as const, run };
-      }
-      return {
-        outcome: "completed" as const,
-        run,
-        result: await getCurrentAnalysisResult(
-          investigationId,
-          fetchImpl,
-          controller.signal,
-        ),
-      };
+      return follow(investigationId, started.id, onProgress, controller);
     })();
-    active = { investigationId, controller, promise };
-    void promise.then(
-      () => {
-        if (active?.promise === promise) active = undefined;
-      },
-      () => {
-        if (active?.promise === promise) active = undefined;
-      },
+    return track(investigationId, controller, promise);
+  }
+
+  // attach watches a run this browser did not start. The Agent can start one on
+  // the Owner's behalf, and the run id then arrives on the Investigation rather
+  // than from a start request.
+  function attach(
+    investigationId: string,
+    runId: string,
+    onProgress?: (run: AnalysisRunProgress) => void,
+  ) {
+    if (active?.investigationId === investigationId) return active.promise;
+    active?.controller.abort();
+    const controller = new AbortController();
+    return track(
+      investigationId,
+      controller,
+      follow(investigationId, runId, onProgress, controller),
+      runId,
     );
-    return promise;
   }
 
   return {
     start,
+    attach,
     async cancel() {
       const selected = active;
       if (!selected) return undefined;

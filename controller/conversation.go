@@ -3,6 +3,7 @@ package controller
 import (
 	"chaintrace/model"
 	"chaintrace/model/store"
+	"chaintrace/utils"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,28 +24,33 @@ const (
 	maximumConversationBodySize = 1 << 20
 	maximumConversationMessage  = 256 << 10
 	maximumIdempotencyKeySize   = 128
+	// agentHistoryMessages caps how much transcript the Agent sees. The tail is
+	// what matters for context, and an unbounded history would eventually
+	// exceed the model's input budget.
+	agentHistoryMessages = 40
 )
 
 type AgentProvider interface {
 	Respond(context.Context, AgentRequest) (AgentResponse, error)
 }
 
-type AgentRequest struct {
-	InvestigationID string
-	TargetAddress   *string
-	Network         store.InvestigationNetwork
-	Dataset         *AgentDatasetContext
-	Conversation    []AgentConversationMessage
-}
+// AgentMode selects which prompt the Agent runs. Summary opens an
+// Investigation with an overview; chat answers an Owner's question.
+type AgentMode string
 
-type AgentDatasetContext struct {
-	ID         string
-	Partial    bool
-	Confidence int
-	StopReason string
-	RiskScore  *int
-	RiskLevel  string
-	Reasons    []string
+const (
+	AgentModeSummary AgentMode = "summary"
+	AgentModeChat    AgentMode = "chat"
+)
+
+// AgentRequest carries only what the provider cannot derive itself. The
+// evidence pack is assembled by the provider from the database, so passing a
+// dataset summary here would only create a second place for it to drift.
+type AgentRequest struct {
+	OwnerID         uint
+	InvestigationID string
+	Mode            AgentMode
+	Conversation    []AgentConversationMessage
 }
 
 type AgentConversationMessage struct {
@@ -102,31 +108,108 @@ func (h *ConversationHandler) GetConversation(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"messages": conversationDTOs(page.Messages), "nextCursor": page.NextCursor})
 }
 
-func (h *ConversationHandler) SubmitConversation(c *gin.Context) {
+// decodeSubmitRequest reads and validates the request body, answering the
+// client itself when anything is wrong.
+func decodeSubmitRequest(c *gin.Context) (submitConversationRequest, bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maximumConversationBodySize)
 	var request submitConversationRequest
 	decoder := json.NewDecoder(c.Request.Body)
 	if err := decoder.Decode(&request); err != nil {
 		writeInvalidConversationRequest(c)
-		return
+		return request, false
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		writeInvalidConversationRequest(c)
-		return
+		return request, false
 	}
 	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
-	if request.IdempotencyKey == "" || len(request.IdempotencyKey) > maximumIdempotencyKeySize ||
-		!utf8.ValidString(request.IdempotencyKey) || strings.TrimSpace(request.Message) == "" ||
-		len(request.Message) > maximumConversationMessage || !utf8.ValidString(request.Message) {
+	if !validBoundedText(request.IdempotencyKey, maximumIdempotencyKeySize) ||
+		!validBoundedText(request.Message, maximumConversationMessage) {
 		writeInvalidConversationRequest(c)
+		return request, false
+	}
+	return request, true
+}
+
+// validBoundedText accepts non-blank, valid UTF-8 within a byte budget.
+func validBoundedText(value string, maximumBytes int) bool {
+	return strings.TrimSpace(value) != "" &&
+		len(value) <= maximumBytes &&
+		utf8.ValidString(value)
+}
+
+func (h *ConversationHandler) SubmitConversation(c *gin.Context) {
+	request, ok := decodeSubmitRequest(c)
+	if !ok {
 		return
 	}
-	if h.provider != nil {
-		c.JSON(http.StatusNotImplemented, gin.H{"code": "agent_not_implemented", "message": "Agent provider execution is not implemented"})
+	ownerID := c.GetUint("user_id")
+	investigationID := c.Param("id")
+	if h.provider == nil {
+		h.writeUnavailable(c, ownerID, investigationID, request, nil)
 		return
 	}
-	messages, err := model.PersistUnavailableConversation(c.GetUint("user_id"), c.Param("id"), request.IdempotencyKey, request.Message)
+
+	history, err := model.LoadRecentConversation(ownerID, investigationID, agentHistoryMessages)
+	if err != nil {
+		writeInvestigationLookupError(c, err)
+		return
+	}
+	// The Owner's new message is not stored yet, so it is appended here rather
+	// than read back; storing it first would leave a dangling question if the
+	// Agent then failed.
+	conversation := append(agentConversation(history), AgentConversationMessage{
+		Role: store.ConversationRoleUser, Content: request.Message,
+	})
+
+	answer, err := h.provider.Respond(c.Request.Context(), AgentRequest{
+		OwnerID:         ownerID,
+		InvestigationID: investigationID,
+		Mode:            AgentModeChat,
+		Conversation:    conversation,
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			writeInvestigationLookupError(c, err)
+			return
+		}
+		h.writeUnavailable(c, ownerID, investigationID, request, err)
+		return
+	}
+
+	messages, err := model.PersistConversationTurn(
+		ownerID, investigationID, request.IdempotencyKey, request.Message, answer.Content,
+	)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			writeInvestigationLookupError(c, err)
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "message": "Internal server error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"messages": conversationDTOs(messages)})
+}
+
+// writeUnavailable stores the Owner's message with a machine outcome and
+// reports the Agent as unavailable. The question is never silently dropped.
+//
+// cause is logged rather than returned: the Owner gets a stable message, but a
+// degraded turn with no recorded reason is impossible to diagnose afterwards.
+func (h *ConversationHandler) writeUnavailable(
+	c *gin.Context, ownerID uint, investigationID string,
+	request submitConversationRequest, cause error,
+) {
+	if cause != nil && utils.SysLog != nil {
+		utils.SysLog.Errorf(
+			"Agent turn failed for investigation %s: %v, ReqId: %s",
+			investigationID, cause, c.GetString(utils.RequestIdKey),
+		)
+	}
+	messages, err := model.PersistUnavailableConversation(
+		ownerID, investigationID, request.IdempotencyKey, request.Message,
+	)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			writeInvestigationLookupError(c, err)
@@ -138,6 +221,14 @@ func (h *ConversationHandler) SubmitConversation(c *gin.Context) {
 	c.JSON(http.StatusServiceUnavailable, gin.H{
 		"code": "agent_unavailable", "persisted": true, "messages": conversationDTOs(messages),
 	})
+}
+
+func agentConversation(messages []model.ConversationMessage) []AgentConversationMessage {
+	result := make([]AgentConversationMessage, 0, len(messages))
+	for _, message := range messages {
+		result = append(result, AgentConversationMessage{Role: message.Role, Content: message.Content})
+	}
+	return result
 }
 
 func conversationPageSize(c *gin.Context) (int, bool) {

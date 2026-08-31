@@ -19,9 +19,17 @@ _Avoid_: Agent session
 **Investigation Status**:
 The analysis lifecycle of an Investigation. `待處理` has no completed analysis, `分析中` has a current analysis run in progress, and `已完成` has a saved current analysis result; completion does not close the Investigation.
 
-**Agent Task**:
-One agent command executed within an Investigation Session, with an `accepted`, `running`, or `completed` status independent of the Investigation Status.
-_Avoid_: Investigation run
+**Agent Turn**:
+One exchange within an Investigation Session: the Owner's message and the Agent's answer, together with any Tool Calls run in between. A turn always ends with an answer and never waits for an Analysis Run to finish.
+_Avoid_: Agent task, investigation run
+
+**Tool Call**:
+The Agent's request for one investigation operation to be carried out on its behalf. The Agent asks; the backend decides whether the request is within the Owner's Analysis Scope and carries it out.
+_Avoid_: Function call, agent action
+
+**Agent Evidence**:
+The bounded set of facts an Agent Turn may reason from. Anything outside it is unknown to the Agent, and an Agent may not assert what the Evidence cannot support.
+_Avoid_: Context, prompt data
 
 **Network**:
 The blockchain network on which an Investigation's address and transactions are interpreted. The same address text on different Networks does not identify the same investigation target.
@@ -92,7 +100,7 @@ _Avoid_: Complete analysis
 
 **Analysis Run**:
 One asynchronous attempt to collect an Analysis Dataset and produce assessments for an Investigation. Its status is `queued`, `running`, `completed`, `failed`, or `cancelled`; a cancelled run publishes no Dataset or assessment, and an Investigation may have only one queued or running Analysis Run at a time.
-_Avoid_: Investigation, Agent Task
+_Avoid_: Investigation, Agent Turn
 
 **Risk Score**:
 A 0-to-100 assessment derived from one Analysis Dataset. It is interpreted together with Analysis Coverage and confidence rather than as an unconditional property of an address.

@@ -60,7 +60,7 @@ func (h *AnalysisHandler) StartRun(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "investigation_target_required", "message": "Investigation target is required"})
 		return
 	}
-	if investigation.Network != store.NetworkTRONMainnet || !isValidTRONAddress(*investigation.Address) {
+	if investigation.Network != store.NetworkTRONMainnet || !IsValidTRONAddress(*investigation.Address) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_tron_target", "message": "Invalid TRON target"})
 		return
 	}

@@ -3,6 +3,7 @@ import { getRiskTone } from "@/src/utils/riskTone";
 import type { ChainTraceController } from "@/src/hooks/useChainTrace";
 import { formatExactAmount } from "@/src/middle/investigation-client";
 import { AnalysisScopeControls } from "@/src/ui/AnalysisScopeControls";
+import { CommandBar } from "@/src/ui/CommandBar";
 
 function conversationContent(message: {
   role: "user" | "system" | "agent";
@@ -236,6 +237,38 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
             </div>
           </div>
 
+          <div className="summary-actions">
+            <button
+              type="button"
+              className="generate-summary-button"
+              onClick={() => void ui.generateSummary()}
+              disabled={
+                !hasStableResult ||
+                ui.isSummarizing ||
+                ui.isRunning ||
+                ui.isConversationLoading
+              }
+              title={
+                hasStableResult
+                  ? "依目前的分析結果產生摘要"
+                  : "需要先完成一次分析"
+              }
+            >
+              {ui.isSummarizing ? "產生摘要中…" : "產生調查摘要"}
+            </button>
+            <small>
+              {hasStableResult
+                ? "摘要依目前分析結果產生，同一份結果只會產生一次。"
+                : "完成一次分析後才能產生摘要。"}
+            </small>
+          </div>
+
+          {ui.summaryNotice && (
+            <div className="summary-notice" role="status">
+              {ui.summaryNotice}
+            </div>
+          )}
+
           <div className="suggestion-grid">
             {investigationSuggestions.map((suggestion, index) => (
               <button
@@ -304,43 +337,7 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
         </section>
       </div>
 
-      <form
-        className="command-bar"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void ui.runInvestigation();
-        }}
-      >
-        <button type="button" aria-label="附加調查資料">
-          ＋
-        </button>
-        <textarea
-          value={ui.query}
-          onChange={(event) => ui.setQuery(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void ui.runInvestigation();
-            }
-          }}
-          placeholder="輸入調查需求，例如：追蹤此地址流向混幣服務的所有路徑…"
-          rows={1}
-          aria-label="輸入調查需求"
-        />
-        <div className="command-meta">
-          <span>Enter 執行 · Shift+Enter 換行</span>
-          <button
-            className="send-button"
-            type="submit"
-            aria-label="執行調查"
-            disabled={
-              ui.isRunning || ui.isConversationLoading || !ui.query.trim()
-            }
-          >
-            ↑
-          </button>
-        </div>
-      </form>
+      <CommandBar ui={ui} />
     </section>
   );
 }

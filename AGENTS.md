@@ -1,3 +1,8 @@
+## Development rules
+
+Global engineering rules for every process in this repo (Go API, Next.js BFF, Python
+Agent). See `docs/development-rules.md`. Read it before adding a new component.
+
 ## Running locally
 
 Backend `.env` and frontend `frontend/.env` both have to be set up before

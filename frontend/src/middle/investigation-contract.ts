@@ -106,6 +106,10 @@ export type Investigation = {
   transactionCount: number | null;
   targetLocked: boolean;
   currentResult: string | null;
+  // The Analysis Run currently collecting for this Investigation, if any. The
+  // Agent can start one on the Owner's behalf, so the browser needs an id it
+  // did not receive from its own start request.
+  activeRun: string | null;
   createdAt: string;
   updatedAt: string;
 };

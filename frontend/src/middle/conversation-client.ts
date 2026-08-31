@@ -1,4 +1,5 @@
 import type {
+  AgentSummaryOutcome,
   AgentUnavailableOutcome,
   ConversationErrorResponse,
   ConversationMessage,
@@ -27,18 +28,28 @@ function conversationPath(investigationId: string) {
   return `/api/investigations/${encodeURIComponent(investigationId)}/conversation`;
 }
 
+function summaryPath(investigationId: string) {
+  return `/api/investigations/${encodeURIComponent(investigationId)}/agent/summary`;
+}
+
 function stableErrorMessage(status: number, code: string) {
-  if (status === 404 || code === "investigation_not_found") {
-    return "找不到這筆調查，可能已被刪除或無權存取。";
-  }
-  if (status === 401 || code === "unauthorized") {
-    expireSession();
-    return "登入狀態已失效，請重新登入。";
+  // Codes are checked before status codes: the summary endpoint answers 404
+  // for "this Investigation has no analysis yet", which is a different problem
+  // from "this Investigation does not exist" and must not read as one.
+  if (code === "current_result_not_found") {
+    return "這筆調查還沒有分析結果，請先執行分析。";
   }
   if (code === "agent_unavailable" || code === "agent_not_implemented") {
     return "Agent 目前無法使用。";
   }
-  if (status === 429 || code === "rate_limited") {
+  if (code === "unauthorized" || status === 401) {
+    expireSession();
+    return "登入狀態已失效，請重新登入。";
+  }
+  if (code === "investigation_not_found" || status === 404) {
+    return "找不到這筆調查，可能已被刪除或無權存取。";
+  }
+  if (code === "rate_limited" || status === 429) {
     return "短時間內的請求過多，請稍候再試。";
   }
   return "無法載入或保存對話，請稍後再試。";
@@ -159,4 +170,32 @@ export async function postConversationMessage(
     };
   }
   throw responseError(response, payload);
+}
+
+// The backend answers 201 when it generated a summary and 200 when it returned
+// one already stored for this dataset. Both are success; only the flag differs.
+export async function postAgentSummary(
+  investigationId: string,
+  fetchImpl: Fetch = fetch,
+  signal?: AbortSignal,
+): Promise<AgentSummaryOutcome> {
+  const response = await fetchImpl(summaryPath(investigationId), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: "{}",
+    cache: "no-store",
+    signal,
+  });
+  const payload = await responsePayload(response);
+  if (!response.ok) throw responseError(response, payload);
+
+  const summary = (payload || {}) as Partial<AgentSummaryOutcome>;
+  return {
+    datasetId: typeof summary.datasetId === "string" ? summary.datasetId : "",
+    created: response.status === 201,
+    messages: requireMessages(summary.messages),
+  };
 }

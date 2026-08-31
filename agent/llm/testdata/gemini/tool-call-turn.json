@@ -1,0 +1,29 @@
+{
+  "status": "requires_action",
+  "id": "",
+  "model": "gemini-3.7-flash",
+  "output_text": "",
+  "steps": [
+    {
+      "content": [
+        {
+          "text": "TXabc 有什麼異常?",
+          "type": "text"
+        }
+      ],
+      "type": "user_input"
+    },
+    {
+      "arguments": {
+        "address": "TXabc"
+      },
+      "id": "fc_1",
+      "name": "expand_node",
+      "type": "function_call"
+    }
+  ],
+  "usage": {
+    "total_input_tokens": 1200,
+    "total_output_tokens": 48
+  }
+}

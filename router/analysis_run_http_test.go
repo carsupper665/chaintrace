@@ -358,11 +358,36 @@ func TestOnlyOneAnalysisRunCanBeActivePerInvestigation(t *testing.T) {
 	if second.Code != http.StatusConflict || !strings.Contains(second.Body.String(), `"code":"analysis_run_active"`) {
 		t.Errorf("second start status = %d, want %d; body: %s", second.Code, http.StatusConflict, second.Body.String())
 	}
+	// A client that did not start this run still has to be able to watch it:
+	// the Agent can start one on the Owner's behalf, and the Investigation is
+	// the only place that discloses its id.
+	if got := investigationActiveRun(t, test, token, investigationID); got == nil || *got != accepted.ID {
+		t.Errorf("activeRun while collecting = %v, want %q", got, accepted.ID)
+	}
+
 	releaseOnce.Do(func() { close(release) })
 	completed := pollAnalysisRun(t, test, token, investigationID, accepted.ID)
 	if completed.Status != "completed" {
 		t.Fatalf("first run after release = %#v", completed)
 	}
+	if got := investigationActiveRun(t, test, token, investigationID); got != nil {
+		t.Errorf("activeRun after publication = %q, want null", *got)
+	}
+}
+
+func investigationActiveRun(t *testing.T, test *authHTTPTest, token, investigationID string) *string {
+	t.Helper()
+	response := test.request(http.MethodGet, "/api/v1/investigations/"+investigationID, nil, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("investigation detail status = %d; body: %s", response.Code, response.Body.String())
+	}
+	var got struct {
+		ActiveRun *string `json:"activeRun"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode investigation detail: %v", err)
+	}
+	return got.ActiveRun
 }
 
 func TestAnalysisRunAndCurrentResultAreOwnerScoped(t *testing.T) {

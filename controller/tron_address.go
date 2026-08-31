@@ -11,7 +11,10 @@ const base58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwx
 
 const maxBase58AddressLength = 64
 
-func isValidTRONAddress(address string) bool {
+// IsValidTRONAddress reports whether text is a well-formed TRON Base58Check
+// address. It is exported because the Agent's tool arguments are model-written
+// text that must pass the same check as an Owner's typed input.
+func IsValidTRONAddress(address string) bool {
 	if len(address) > maxBase58AddressLength {
 		return false
 	}

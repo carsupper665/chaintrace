@@ -1,10 +1,12 @@
 import {
   createConversationIdempotencyKey,
   getConversationPage,
+  postAgentSummary,
   postConversationMessage,
 } from "@/src/middle/conversation-client";
 import {
   CONVERSATION_PAGE_SIZE,
+  type AgentSummaryOutcome,
   type ConversationSubmitOutcome,
   type ConversationMessage,
 } from "@/src/middle/conversation-contract";
@@ -82,6 +84,31 @@ export function createConversationBrowser(
     return state;
   }
 
+  // Newly persisted messages are the newest durable records, so any page the
+  // Owner had not disclosed yet sits between the loaded window and them. Drain
+  // forward first, then merge; mergeMessages keeps them unique when the last
+  // drained page already contains them. A failed drain must not report a
+  // persisted message as lost.
+  async function adoptNewMessages(
+    investigationId: string,
+    version: number,
+    messages: ConversationMessage[],
+  ) {
+    if (!isCurrent(investigationId, version)) return;
+    try {
+      while (state.investigationId === investigationId && state.nextCursor) {
+        const cursorBefore = state.nextCursor;
+        await loadMore();
+        if (state.nextCursor === cursorBefore) break;
+      }
+    } catch {
+      // Leave the remaining pages for an explicit "load more".
+    }
+    if (state.investigationId === investigationId) {
+      state = { ...state, messages: mergeMessages(state.messages, messages) };
+    }
+  }
+
   return {
     getState() {
       return state;
@@ -106,6 +133,16 @@ export function createConversationBrowser(
     },
 
     loadMore,
+
+    // A just-created Investigation provably has no conversation, so this
+    // session adopts it without a round trip. Fetching an empty page here would
+    // only race the first submit and could drop its reply from the thread.
+    startFresh(investigationId: string) {
+      beginRequest(investigationId);
+      pendingSubmission = null;
+      state = { investigationId, messages: [], nextCursor: null };
+      return state;
+    },
 
     async submit(
       message: string,
@@ -134,31 +171,27 @@ export function createConversationBrowser(
         fetchImpl,
         request.signal,
       );
-      if (isCurrent(investigationId, request.version)) {
-        // The submitted pair is now the newest durable record, so any page the
-        // Owner had not disclosed yet sits between the loaded window and that
-        // pair. Drain forward first, then merge; mergeMessages keeps the pair
-        // unique when the last drained page already contains it. A failed drain
-        // must not report the persisted message as lost.
-        try {
-          while (state.investigationId === investigationId && state.nextCursor) {
-            const cursorBefore = state.nextCursor;
-            await loadMore();
-            if (state.nextCursor === cursorBefore) break;
-          }
-        } catch {
-          // Leave the remaining pages for an explicit "load more".
-        }
-        if (state.investigationId === investigationId) {
-          state = {
-            ...state,
-            messages: mergeMessages(state.messages, outcome.messages),
-          };
-        }
-      }
+      await adoptNewMessages(investigationId, request.version, outcome.messages);
       if (pendingSubmission?.idempotencyKey === commandKey) {
         pendingSubmission = null;
       }
+      return outcome;
+    },
+
+    // The summary is generated once per Analysis Dataset. Asking again returns
+    // the stored one, so this is safe to press twice.
+    async requestSummary(): Promise<AgentSummaryOutcome> {
+      const investigationId = state.investigationId;
+      if (!investigationId) {
+        throw new Error("An Investigation conversation must be loaded first");
+      }
+      const request = beginRequest(investigationId);
+      const outcome = await postAgentSummary(
+        investigationId,
+        fetchImpl,
+        request.signal,
+      );
+      await adoptNewMessages(investigationId, request.version, outcome.messages);
       return outcome;
     },
 

@@ -1,13 +1,19 @@
 # Local development
 
-ChainTrace is two processes: the Go API and a Next.js frontend that acts as a
-BFF. The browser never talks to the Go API directly except for one redirect
-during login.
+ChainTrace is three processes: the Go API, a Next.js frontend that acts as a
+BFF, and an optional Python LLM Agent. The browser never talks to the Go API
+directly except for one redirect during login, and never reaches the Agent at
+all.
 
 ```
 browser ──► Next.js :3000 ──► Go API :7794 ──► PostgreSQL / TronGrid
    └──────── /Authentication/verify (login link only) ───────┘
+                                    │
+                                    └──► Python Agent :7795 (LAN only) ──► Gemini
 ```
+
+The Agent is optional: with `AGENT_BASE_URL` unset, every conversation request
+returns `agent_unavailable` and everything else works as before.
 
 ## Configuration
 
@@ -15,10 +21,12 @@ browser ──► Next.js :3000 ──► Go API :7794 ──► PostgreSQL / Tr
 | --- | --- | --- |
 | Go API | `.env` (repository root) | [`.env.example`](../.env.example) |
 | Frontend | `frontend/.env` | [`frontend/.env.example`](../frontend/.env.example) |
+| LLM Agent | `agent/.env` | [`agent/.env.example`](../agent/.env.example) |
 
 ```bash
 cp .env.example .env
 cp frontend/.env.example frontend/.env
+cp agent/.env.example agent/.env
 ```
 
 The frontend only needs `CHAINTRACE_BACKEND_URL` to point at the Go API
@@ -81,6 +89,18 @@ Because steps 3–5 originate from the Next.js process, the Go API sees a single
 client IP for all Owners. Keep that in mind when tuning
 `GLOBAL_MAX_REQUEST_NUM`.
 
+### Skipping the mail round trip while testing
+
+`go run ./devtoken` prints a JWT for the root Owner (`-email you@example.com`
+for another, `-out token.txt` to write it to a file, because the shared logger
+also writes to stdout). Use it as `Authorization: Bearer <token>` against the Go
+API, or set it as the `chaintrace_credential` cookie to enter the UI.
+
+It signs with the key already in `.env`, so it grants nothing an Owner could not
+get by logging in — it only skips the email. **It is a developer tool: never
+build it into a deployment.** The root `go build .` does not include it; it is
+its own `package main` under `devtoken/`.
+
 ## Tests
 
 ```bash
@@ -93,3 +113,35 @@ cd frontend && npm test
 
 `npm test` runs `vinext build` before the Node test files, so it also catches
 type and build regressions.
+
+## Running the LLM Agent
+
+The Agent is a LAN-only sidecar. It holds the LLM credentials; the Go API and
+the frontend never see them (see [development rules](development-rules.md)
+section 5).
+
+```bash
+python -m venv agent/.venv
+agent/.venv/Scripts/python.exe -m pip install -e "agent[gemini,dev]"
+```
+
+Fill `LLM_API_KEY` in `agent/.env` with a key from
+<https://aistudio.google.com/apikey>, pick the same `AGENT_SHARED_KEY` in both
+`.env` and `agent/.env`, then start it:
+
+```bash
+agent/.venv/Scripts/python.exe agent/app.py
+```
+
+`GET http://127.0.0.1:7795/healthz` should answer. To confirm the key and the
+adapter against the real API — this one costs tokens — run
+`agent/.venv/Scripts/python.exe agent/smoke.py`.
+
+Set `AGENT_BASE_URL` and `AGENT_SHARED_KEY` in the repository-root `.env` so
+the Go API starts using it.
+
+### If a model stops responding
+
+Gemini models go over capacity from time to time; the symptom is a request that
+hangs rather than an error. Switch `LLM_MODEL` in `agent/.env` to another model
+(`gemini-3.6-flash`, `gemini-3.5-flash-lite`) — that is faster than waiting.

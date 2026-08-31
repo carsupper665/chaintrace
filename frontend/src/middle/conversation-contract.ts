@@ -26,6 +26,15 @@ export type ConversationSubmitOutcome =
   | AgentUnavailableOutcome
   | AgentReplyOutcome;
 
+// A summary belongs to one Analysis Dataset. Asking again for the same dataset
+// returns the stored summary rather than generating a second one, which is what
+// `created: false` reports.
+export type AgentSummaryOutcome = {
+  datasetId: string;
+  created: boolean;
+  messages: ConversationMessage[];
+};
+
 export type ConversationErrorResponse = {
   code?: string;
   error?: string;

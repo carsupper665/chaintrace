@@ -1,0 +1,15 @@
+[project]
+name = "chaintrace-agent"
+version = "0.1.0"
+description = "ChainTrace LLM Agent — LAN-only sidecar for the Go API"
+requires-python = ">=3.12"
+dependencies = ["fastapi", "uvicorn", "python-dotenv"]
+
+[project.optional-dependencies]
+gemini = ["google-genai>=2.3.0"]
+openai = ["openai"]
+anthropic = ["anthropic"]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

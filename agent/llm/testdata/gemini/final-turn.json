@@ -1,0 +1,21 @@
+{
+  "status": "completed",
+  "id": "",
+  "model": "gemini-3.7-flash",
+  "output_text": "TXabc 觸發了 fan_out。",
+  "steps": [
+    {
+      "content": [
+        {
+          "text": "TXabc 觸發了 fan_out。",
+          "type": "text"
+        }
+      ],
+      "type": "model_output"
+    }
+  ],
+  "usage": {
+    "total_input_tokens": 1800,
+    "total_output_tokens": 95
+  }
+}

@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ConversationClientError } from "@/src/middle/conversation-client";
+import type { AnalysisFlowResult } from "@/src/middle/investigation-client";
 import {
   AnalysisRunClientError,
   createAnalysisRunner,
@@ -63,6 +64,8 @@ export function useChainTrace() {
   const [workspaceError, setWorkspaceError] = useState("");
   const [targetMessage, setTargetMessage] = useState("");
   const [isRunning, setIsRunning] = useState(false);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [summaryNotice, setSummaryNotice] = useState("");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isAnalysisCollapsed, setIsAnalysisCollapsed] = useState(false);
   const [isSidebarHovered, setIsSidebarHovered] = useState(false);
@@ -149,6 +152,9 @@ export function useChainTrace() {
   const investigationSessions = useRef(
     new Map<string, InvestigationSessionState>(),
   );
+  // The Investigation whose conversation this session opened itself, so the
+  // loading effect knows not to fetch a page it already has.
+  const freshConversation = useRef("");
   const loadedAnalysisResult = useRef("");
   const currentGraphDataset = useRef("");
   const analysisAttempt = useRef(0);
@@ -253,6 +259,7 @@ export function useChainTrace() {
       window.queueMicrotask(() => {
         if (cancelled) return;
         setChatMessages([]);
+        setSummaryNotice("");
         setConversationError("");
         setHasMoreConversation(false);
         setIsConversationLoading(false);
@@ -262,9 +269,23 @@ export function useChainTrace() {
       };
     }
 
+    // A conversation opened by openInvestigationForCommand is already held by
+    // this session and its first submit may be in flight. Re-loading it here
+    // would supersede that request and drop its reply from the thread.
+    if (freshConversation.current === investigationId) {
+      freshConversation.current = "";
+      window.queueMicrotask(() => {
+        if (!cancelled) setIsConversationLoading(false);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
     window.queueMicrotask(() => {
       if (cancelled) return;
       setChatMessages([]);
+      setSummaryNotice("");
       setConversationError("");
       setHasMoreConversation(false);
       setIsConversationLoading(true);
@@ -303,7 +324,8 @@ export function useChainTrace() {
   useEffect(() => {
     const investigationId = active?.id;
     const resultId = active?.currentResult;
-    const key = investigationId && resultId ? `${investigationId}:${resultId}` : "";
+    const key =
+      investigationId && resultId ? `${investigationId}:${resultId}` : "";
     let cancelled = false;
     const controller = new AbortController();
 
@@ -482,10 +504,7 @@ export function useChainTrace() {
     setIsSidebarClosing(false);
     setIsSidebarCollapsed((current) => {
       const next = !current;
-      window.localStorage.setItem(
-        "chaintrace-sidebar-collapsed",
-        String(next),
-      );
+      window.localStorage.setItem("chaintrace-sidebar-collapsed", String(next));
       return next;
     });
   }
@@ -506,10 +525,7 @@ export function useChainTrace() {
   function toggleTheme() {
     setIsLightMode((current) => {
       const next = !current;
-      window.localStorage.setItem(
-        "chaintrace-theme",
-        next ? "light" : "dark",
-      );
+      window.localStorage.setItem("chaintrace-theme", next ? "light" : "dark");
       return next;
     });
   }
@@ -543,7 +559,8 @@ export function useChainTrace() {
     setIsGraphFullscreen((current) => {
       const next = !current;
       if (next) {
-        if (analysisCloseTimer.current) clearTimeout(analysisCloseTimer.current);
+        if (analysisCloseTimer.current)
+          clearTimeout(analysisCloseTimer.current);
         setIsAnalysisClosing(false);
         setIsAnalysisHovered(true);
       }
@@ -551,10 +568,7 @@ export function useChainTrace() {
     });
   }
 
-  function beginPanelResize(
-    panel: "sidebar" | "analysis",
-    clientX: number,
-  ) {
+  function beginPanelResize(panel: "sidebar" | "analysis", clientX: number) {
     panelResizeStart.current = { clientX, sidebarWidth, analysisWidth };
     panelResizeCurrent.current = { sidebarWidth, analysisWidth };
     setResizingPanel(panel);
@@ -577,10 +591,7 @@ export function useChainTrace() {
         setResizingPanel(null);
         return;
       }
-      const nextWidth = Math.min(
-        maximum,
-        Math.max(220, rawWidth),
-      );
+      const nextWidth = Math.min(maximum, Math.max(220, rawWidth));
       panelResizeCurrent.current.sidebarWidth = nextWidth;
       setSidebarWidth(nextWidth);
     }
@@ -598,10 +609,7 @@ export function useChainTrace() {
         setResizingPanel(null);
         return;
       }
-      const nextWidth = Math.min(
-        maximum,
-        Math.max(320, rawWidth),
-      );
+      const nextWidth = Math.min(maximum, Math.max(320, rawWidth));
       panelResizeCurrent.current.analysisWidth = nextWidth;
       setAnalysisWidth(nextWidth);
     }
@@ -639,22 +647,19 @@ export function useChainTrace() {
     }
   }
 
-  function adjustPanelWidth(
-    panel: "sidebar" | "analysis",
-    delta: number,
-  ) {
+  function adjustPanelWidth(panel: "sidebar" | "analysis", delta: number) {
     const centerMinimum = 500;
     if (panel === "sidebar") {
       const maximum = Math.max(
         220,
         window.innerWidth - analysisWidth - centerMinimum,
       );
-      const nextWidth = Math.min(
-        maximum,
-        Math.max(220, sidebarWidth + delta),
-      );
+      const nextWidth = Math.min(maximum, Math.max(220, sidebarWidth + delta));
       setSidebarWidth(nextWidth);
-      window.localStorage.setItem("chaintrace-sidebar-width", String(nextWidth));
+      window.localStorage.setItem(
+        "chaintrace-sidebar-width",
+        String(nextWidth),
+      );
       return;
     }
 
@@ -662,10 +667,7 @@ export function useChainTrace() {
       320,
       window.innerWidth - sidebarWidth - centerMinimum,
     );
-    const nextWidth = Math.min(
-      maximum,
-      Math.max(320, analysisWidth + delta),
-    );
+    const nextWidth = Math.min(maximum, Math.max(320, analysisWidth + delta));
     setAnalysisWidth(nextWidth);
     window.localStorage.setItem("chaintrace-analysis-width", String(nextWidth));
   }
@@ -680,9 +682,7 @@ export function useChainTrace() {
     try {
       const updated = await setInvestigationTarget(active.id, address);
       setInvestigations((current) =>
-        current.map((item) =>
-          item.id === updated.id ? updated : item,
-        ),
+        current.map((item) => (item.id === updated.id ? updated : item)),
       );
       setAddressDraft(updated.address || "");
       graphBrowser.clear();
@@ -703,11 +703,7 @@ export function useChainTrace() {
   }
 
   async function expandGraphNode(nodeId: string) {
-    if (
-      !transactionGraph ||
-      expandingNodeId ||
-      expandedNodeIds.has(nodeId)
-    ) {
+    if (!transactionGraph || expandingNodeId || expandedNodeIds.has(nodeId)) {
       return;
     }
     setSelectedNodeId(nodeId);
@@ -855,6 +851,7 @@ export function useChainTrace() {
     setGraphPageError("");
     setExportError("");
     setChatMessages([]);
+    setSummaryNotice("");
     setConversationError("");
     setHasMoreConversation(false);
     setIsConversationLoading(true);
@@ -948,32 +945,124 @@ export function useChainTrace() {
     }
   }
 
+  // A command sent with nothing open creates its own Investigation, so the
+  // Owner can start from a blank workspace by pasting an address and asking the
+  // Agent to investigate it.
+  async function openInvestigationForCommand() {
+    const created = await createInvestigationRecord("新調查任務");
+    freshConversation.current = created.id;
+    conversationBrowser.startFresh(created.id);
+    setInvestigations((current) => [...current, created]);
+    setActiveId(created.id);
+    setAddressDraft("");
+    setChatMessages([]);
+    setSummaryNotice("");
+    setHasMoreConversation(false);
+    return created.id;
+  }
+
+  // The Agent can start an Analysis Run during a turn, and its reply carries no
+  // run id. The Investigation is where that is discovered; without picking it up
+  // here the analysis would finish unnoticed.
+  async function adoptAgentAnalysisRun(investigationId: string) {
+    let investigation: Investigation;
+    try {
+      investigation = await getInvestigation(investigationId);
+    } catch {
+      // The turn itself was persisted; a failed refresh is not the Owner's
+      // problem and must not be reported as a failed message.
+      return;
+    }
+    // Storing the refreshed Investigation is enough: the run it names is picked
+    // up by the effect that watches for one.
+    setInvestigations((current) =>
+      current.map((item) =>
+        item.id === investigation.id ? investigation : item,
+      ),
+    );
+  }
+
   async function runInvestigation(text?: string) {
     const command = (text || query).trim();
-    if (!active || !command || isRunning || isConversationLoading) return;
-    const investigationId = active.id;
+    if (!command || isRunning || isConversationLoading || isWorkspaceMutating) {
+      return;
+    }
     const attempt = ++conversationAttempt.current;
     setQuery("");
     setConversationError("");
     setIsRunning(true);
     try {
+      const investigationId =
+        active?.id || (await openInvestigationForCommand());
       await conversationBrowser.submit(command);
       if (conversationAttempt.current !== attempt) return;
       const conversation = conversationBrowser.getState();
       if (conversation.investigationId !== investigationId) return;
       setChatMessages(conversation.messages);
       setHasMoreConversation(Boolean(conversation.nextCursor));
+      await adoptAgentAnalysisRun(investigationId);
     } catch (error) {
       if (conversationAttempt.current !== attempt) return;
       setQuery((current) => current || command);
       setConversationError(
-        error instanceof ConversationClientError
+        error instanceof ConversationClientError ||
+          error instanceof InvestigationClientError
           ? error.message
           : "訊息結果不明，請重試；重試會沿用相同的 command identity。",
       );
     } finally {
       if (conversationAttempt.current === attempt) setIsRunning(false);
     }
+  }
+
+  function noticeForSummary(created: boolean, automatic: boolean) {
+    if (!created) return "這份分析結果的摘要先前已產生，直接沿用。";
+    return automatic
+      ? "分析完成，Agent 已自動加上摘要與看法。"
+      : "已產生調查摘要。";
+  }
+
+  // The summary opens an Investigation with an overview of its current analysis
+  // result. It is generated once per Analysis Dataset, so asking again returns
+  // the stored one instead of spending tokens twice — which is what makes this
+  // safe for both the button and the automatic continuation after a run.
+  async function requestAgentSummary(
+    investigationId: string,
+    automatic: boolean,
+  ) {
+    if (conversationBrowser.getState().investigationId !== investigationId) {
+      return;
+    }
+    const attempt = ++conversationAttempt.current;
+    setConversationError("");
+    setSummaryNotice("");
+    setIsSummarizing(true);
+    try {
+      const outcome = await conversationBrowser.requestSummary();
+      if (conversationAttempt.current !== attempt) return;
+      const conversation = conversationBrowser.getState();
+      if (conversation.investigationId !== investigationId) return;
+      setChatMessages(conversation.messages);
+      setHasMoreConversation(Boolean(conversation.nextCursor));
+      setSummaryNotice(noticeForSummary(outcome.created, automatic));
+    } catch (error) {
+      if (conversationAttempt.current !== attempt) return;
+      const message =
+        error instanceof ConversationClientError
+          ? error.message
+          : "無法產生摘要，請稍後再試。";
+      // The analysis itself succeeded, so a failed continuation is a notice
+      // rather than a failed question.
+      if (automatic) setSummaryNotice(`${message}（可按「產生調查摘要」重試）`);
+      else setConversationError(message);
+    } finally {
+      if (conversationAttempt.current === attempt) setIsSummarizing(false);
+    }
+  }
+
+  async function generateSummary() {
+    if (!active || isRunning || isSummarizing || isConversationLoading) return;
+    await requestAgentSummary(active.id, false);
   }
 
   async function loadMoreConversation() {
@@ -1041,9 +1130,7 @@ export function useChainTrace() {
       if (analysisAttempt.current !== attempt) return;
       setInvestigations((current) =>
         current.map((item) =>
-          item.id === restored.investigation.id
-            ? restored.investigation
-            : item,
+          item.id === restored.investigation.id ? restored.investigation : item,
         ),
       );
       if (restored.result) {
@@ -1055,23 +1142,36 @@ export function useChainTrace() {
       }
     } catch {
       if (analysisAttempt.current === attempt) {
-        setAnalysisError((current) =>
-          `${current || "分析未完成。"} 無法重新載入後端穩定結果，請重新載入工作區。`,
+        setAnalysisError(
+          (current) =>
+            `${current || "分析未完成。"} 無法重新載入後端穩定結果，請重新載入工作區。`,
         );
       }
     }
   }
 
-  async function startAnalysis() {
-    if (
-      !active?.address ||
-      isAnalysisLoading ||
-      analysisRun?.status === "queued" ||
-      analysisRun?.status === "running"
-    ) {
-      return;
-    }
-    const investigationId = active.id;
+  // trackAnalysisProgress mirrors one run's progress into the panel. It is made
+  // per attempt so a superseded run cannot write over the current one.
+  function trackAnalysisProgress(investigationId: string, attempt: number) {
+    return (run: AnalysisRunProgress) => {
+      if (analysisAttempt.current !== attempt) return;
+      setAnalysisRun(run);
+      const collecting = run.status === "queued" || run.status === "running";
+      setIsAnalysisLoading(collecting);
+      if (collecting) {
+        setInvestigations((current) =>
+          current.map((item) =>
+            item.id === investigationId ? { ...item, status: "分析中" } : item,
+          ),
+        );
+      }
+    };
+  }
+
+  // beginAnalysisAttempt claims the analysis slot and clears the previous
+  // outcome, so the Owner's button and a run adopted from the Agent both start
+  // from the same clean state.
+  function beginAnalysisAttempt() {
     const attempt = analysisAttempt.current + 1;
     analysisAttempt.current = attempt;
     setAnalysisError("");
@@ -1079,39 +1179,26 @@ export function useChainTrace() {
     setAnalysisRun(null);
     setTargetMessage("");
     setIsAnalysisLoading(true);
+    return attempt;
+  }
+
+  async function followAnalysisFlow(
+    investigationId: string,
+    attempt: number,
+    flow: Promise<AnalysisFlowResult>,
+  ) {
     try {
-      const completed = await analysisRunner.start(investigationId, analysisScope, (run) => {
-        if (analysisAttempt.current !== attempt) return;
-        setAnalysisRun(run);
-        setIsAnalysisLoading(
-          run.status === "queued" || run.status === "running",
-        );
-        if (run.status === "queued" || run.status === "running") {
-          setInvestigations((current) =>
-            current.map((item) =>
-              item.id === investigationId
-                ? { ...item, status: "分析中" }
-                : item,
-            ),
-          );
-        }
-      });
+      const completed = await flow;
       if (analysisAttempt.current !== attempt) return;
-      if (completed.outcome === "run_lost") {
-        setAnalysisRun(null);
-        setAnalysisOutcome("run_lost");
+      if (completed.outcome !== "completed") {
+        setAnalysisRun(completed.outcome === "cancelled" ? completed.run : null);
+        setAnalysisOutcome(completed.outcome);
         setIsAnalysisLoading(false);
         setAnalysisError(
-          "後端重新啟動後已遺失這次分析工作；既有結果已恢復，請重新送出分析。",
+          completed.outcome === "cancelled"
+            ? "分析已取消，未發布新結果；既有結果保持不變。"
+            : "後端重新啟動後已遺失這次分析工作；既有結果已恢復，請重新送出分析。",
         );
-        await restoreStableState(investigationId, attempt);
-        return;
-      }
-      if (completed.outcome === "cancelled") {
-        setAnalysisRun(completed.run);
-        setAnalysisOutcome("cancelled");
-        setIsAnalysisLoading(false);
-        setAnalysisError("分析已取消，未發布新結果；既有結果保持不變。");
         await restoreStableState(investigationId, attempt);
         return;
       }
@@ -1126,6 +1213,10 @@ export function useChainTrace() {
         ),
       );
       setIsAnalysisLoading(false);
+      // A finished run continues the conversation by itself: the Owner asked
+      // for an investigation, not for a button to press afterwards. Nothing is
+      // written as if the Owner had spoken — only the Agent's own message.
+      await requestAgentSummary(investigationId, true);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       if (analysisAttempt.current !== attempt) return;
@@ -1141,6 +1232,29 @@ export function useChainTrace() {
       await restoreStableState(investigationId, attempt);
     }
   }
+
+  async function startAnalysis() {
+    if (
+      !active?.address ||
+      isAnalysisLoading ||
+      analysisRun?.status === "queued" ||
+      analysisRun?.status === "running"
+    ) {
+      return;
+    }
+    const investigationId = active.id;
+    const attempt = beginAnalysisAttempt();
+    await followAnalysisFlow(
+      investigationId,
+      attempt,
+      analysisRunner.start(
+        investigationId,
+        analysisScope,
+        trackAnalysisProgress(investigationId, attempt),
+      ),
+    );
+  }
+
 
   async function cancelAnalysis() {
     if (isAnalysisCancelling) return;
@@ -1191,6 +1305,7 @@ export function useChainTrace() {
           setTransactionGraph(null);
           setCurrentAnalysisResult(null);
           setChatMessages([]);
+          setSummaryNotice("");
           setConversationError("");
           setHasMoreConversation(false);
           setIsConversationLoading(false);
@@ -1208,6 +1323,36 @@ export function useChainTrace() {
       setIsWorkspaceMutating(false);
     }
   }
+
+  // A run can already be collecting when an Investigation comes into view: the
+  // Agent started one on the Owner's behalf, this session started one before a
+  // reload, or a chat turn just started one. Its id travels on the
+  // Investigation, so watching that is the one place all three are picked up.
+  useEffect(() => {
+    const investigationId = active?.id;
+    const runId = active?.activeRun;
+    if (!investigationId || !runId) return;
+    let cancelled = false;
+    window.queueMicrotask(() => {
+      if (cancelled) return;
+      const attempt = beginAnalysisAttempt();
+      void followAnalysisFlow(
+        investigationId,
+        attempt,
+        analysisRunner.attach(
+          investigationId,
+          runId,
+          trackAnalysisProgress(investigationId, attempt),
+        ),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+    // The helpers below are rebuilt every render, so listing them would restart
+    // the run watch on every render instead of only when the run changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.activeRun, active?.id]);
 
   return {
     active,
@@ -1253,6 +1398,8 @@ export function useChainTrace() {
     isGraphPageLoading,
     isLightMode,
     isRunning,
+    isSummarizing,
+    summaryNotice,
     isWorkspaceLoading,
     isWorkspaceMutating,
     isSidebarClosing,
@@ -1292,6 +1439,7 @@ export function useChainTrace() {
     resetGraphView,
     moveGraphNode,
     runInvestigation,
+    generateSummary,
     startAnalysis,
     setActiveId: selectInvestigation,
     setAddressDraft,

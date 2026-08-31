@@ -43,8 +43,12 @@ type investigationDTO struct {
 	FlowAsset        *string                    `json:"flowAsset"`
 	TransactionCount int                        `json:"transactionCount"`
 	CurrentResult    *string                    `json:"currentResult"`
-	CreatedAt        time.Time                  `json:"createdAt"`
-	UpdatedAt        time.Time                  `json:"updatedAt"`
+	// ActiveRun lets a client attach to a run it did not start itself. The
+	// Agent can start one on the Owner's behalf, and without this the browser
+	// would have no id to poll and the analysis would finish unnoticed.
+	ActiveRun *string   `json:"activeRun"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type InvestigationHandler struct {
@@ -71,7 +75,7 @@ func CreateInvestigation(c *gin.Context) {
 		*request.Address = strings.TrimSpace(*request.Address)
 		if *request.Address == "" {
 			request.Address = nil
-		} else if !isValidTRONAddress(*request.Address) {
+		} else if !IsValidTRONAddress(*request.Address) {
 			c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_tron_target", "message": "Invalid TRON target"})
 			return
 		}
@@ -156,7 +160,7 @@ func UpdateInvestigation(c *gin.Context) {
 	}
 	if request.Address != nil {
 		address := strings.TrimSpace(*request.Address)
-		if address != "" && !isValidTRONAddress(address) {
+		if address != "" && !IsValidTRONAddress(address) {
 			c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_tron_target", "message": "Invalid TRON target"})
 			return
 		}
@@ -217,6 +221,7 @@ func newInvestigationDTO(investigation *store.Investigation) investigationDTO {
 		FlowAsset:        investigation.FlowAsset,
 		TransactionCount: investigation.TransactionCount,
 		CurrentResult:    investigation.CurrentResultID,
+		ActiveRun:        investigation.ActiveAnalysisRunID,
 		CreatedAt:        investigation.CreatedAt,
 		UpdatedAt:        investigation.UpdatedAt,
 	}
