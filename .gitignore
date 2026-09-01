@@ -16,3 +16,9 @@ agent/.env
 # provider key pasted from the Gemini console — it must never be committed.
 .scratch/
 api.txt
+
+# 爬回來的訓練資料（很大，而且可以重爬）
+crawler/data/
+crawler/train-data/
+crawler/*.jsonl
+crawler/.env
