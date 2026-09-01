@@ -41,6 +41,15 @@ def from_env() -> LLM:
 
     if provider == "fake":
         return FakeLLM()
+    if provider == "codex":
+        from .codex import DEFAULT_COMMAND, DEFAULT_TIMEOUT_SECONDS, CodexLLM
+
+        return CodexLLM(
+            command=os.getenv("CODEX_COMMAND", "").strip() or DEFAULT_COMMAND,
+            model=model,
+            timeout=_float_env("LLM_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+            reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "").strip(),
+        )
     if not api_key:
         raise LLMError(f"LLM_API_KEY 未設定，無法建立 {provider} adapter")
     if provider == "gemini":

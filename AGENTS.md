@@ -3,6 +3,16 @@
 Global engineering rules for every process in this repo (Go API, Next.js BFF, Python
 Agent). See `docs/development-rules.md`. Read it before adding a new component.
 
+### Implementation approach
+
+- Write the minimum amount of code needed to solve the current problem.
+- Prefer the simplest direct implementation over abstraction or configuration for
+  possible future needs.
+- Keep modules independent. Coordinate across boundaries through small, explicit
+  contracts rather than coupling implementations together.
+- Give each module one focused responsibility; compose the focused pieces only at
+  the integration boundary.
+
 ## Running locally
 
 Backend `.env` and frontend `frontend/.env` both have to be set up before

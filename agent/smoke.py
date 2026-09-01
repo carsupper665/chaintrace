@@ -1,4 +1,4 @@
-"""真的打一次 Gemini，確認金鑰與 adapter 都通。
+"""真的呼叫一次設定中的 LLM provider，確認連線與 adapter 都通。
 
 這不是自動化測試——它要網路、要金鑰、會花額度。自動化測試一律用 FakeLLM。
 
@@ -197,6 +197,12 @@ def check_blank_investigation(llm) -> None:
 
 
 def explain_ping_failure(error: LLMError) -> None:
+    if os.getenv("LLM_PROVIDER", "gemini").strip().lower() == "codex":
+        print("\nCodex 最小請求失敗。檢查：")
+        print("  1. `codex login` 是否已完成")
+        print("  2. CODEX_COMMAND 是否能啟動 app-server")
+        print("  3. 這台機器是否能連 api.openai.com")
+        return
     if error.retryable:
         # 連得上但沒回應：網路或服務端的問題。
         print("\n最小請求都連不上。檢查：")
@@ -225,13 +231,13 @@ def main() -> int:
         llm = from_env()
     except LLMError as error:
         print(f"建不出 adapter：{error}")
-        print("請確認 agent/.env 裡的 LLM_API_KEY 有填。")
+        print("請確認 agent/.env 裡的 provider 設定與憑證。")
         return 1
 
     print(
         f"model={os.getenv('LLM_MODEL') or '(預設)'}  "
         f"timeout={os.getenv('LLM_TIMEOUT_SECONDS') or '120'}s  "
-        f"thinking={os.getenv('LLM_THINKING_LEVEL') or 'low'}\n"
+        f"thinking={os.getenv('LLM_REASONING_EFFORT') or os.getenv('LLM_THINKING_LEVEL') or 'default'}\n"
     )
 
     try:

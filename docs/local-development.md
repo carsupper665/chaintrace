@@ -140,6 +140,24 @@ adapter against the real API — this one costs tokens — run
 Set `AGENT_BASE_URL` and `AGENT_SHARED_KEY` in the repository-root `.env` so
 the Go API starts using it.
 
+### Using Codex as the Agent provider
+
+[Codex app-server](https://learn.chatgpt.com/docs/app-server) can use the account
+already authenticated by the local Codex installation, so this provider does not
+require `LLM_API_KEY`. Set these values in `agent/.env`:
+
+```env
+LLM_PROVIDER=codex
+LLM_MODEL=
+CODEX_COMMAND=codex
+```
+
+Run `codex login` first if the local CLI is not authenticated. Each Agent Turn
+uses an ephemeral Codex thread in an empty read-only sandbox. Built-in execution,
+web, app, plugin, MCP, skill, and subagent capabilities are disabled. The only
+accepted tool calls are the Investigation tools supplied by Go; Python returns
+those requests to Go's existing authorization and execution loop.
+
 ### If a model stops responding
 
 Gemini models go over capacity from time to time; the symptom is a request that
