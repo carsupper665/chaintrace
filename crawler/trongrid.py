@@ -7,7 +7,6 @@
 兩個實測結論（2026-09-01）：
   1. 合約事件端點回傳的地址是 hex（0x1cace…），但抓轉帳的端點只吃 Base58（T…）。
      中間一定要轉，to_base58() 就是為此存在。
-  2. /v1/accounts/{address} 一次呼叫就給 create_time，比翻頁找最早一筆便宜得多。
 """
 
 import hashlib
@@ -16,7 +15,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
 
 BASE_URL = "https://api.trongrid.io"
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
@@ -150,13 +148,6 @@ class TronGrid:
                 return collected, False
         return collected[:cap], True
 
-    def created_at(self, address: str) -> datetime | None:
-        """帳戶建立時間，給帳戶年齡特徵用。查不到就回 None。"""
-        page = self._get(f"/v1/accounts/{address}", {})
-        records = page.get("data") or []
-        created = records[0].get("create_time") if records else None
-        return _to_datetime(created) if created else None
-
 
 def _usable(record: dict) -> bool:
     """只收得下的 USDT 轉帳。跟 Go 的收集端同一組條件。"""
@@ -178,7 +169,3 @@ def _normalize(record: dict) -> dict:
         "value": str(record["value"]),
         "ts": int(record["block_timestamp"]),
     }
-
-
-def _to_datetime(milliseconds: int) -> datetime:
-    return datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)

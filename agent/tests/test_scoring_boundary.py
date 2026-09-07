@@ -14,6 +14,7 @@ import pytest
 
 AGENT = pathlib.Path(__file__).resolve().parent.parent
 SCORING = AGENT / "scoring"
+TRAIN = SCORING / "train"
 
 # LLM 那一側的模組。scoring 不准碰。
 LLM_SIDE = ("llm", "prompt", "session", "turn", "schemas")
@@ -85,6 +86,15 @@ def test_nothing_here_imports_the_standalone_crawler(path):
     # crawler/ 是獨立部署單元，會被複製到別台機器上跑。讓它進 agent 的 import
     # graph，這個「複製整個資料夾就能跑」的性質就沒了。
     assert not touches(imported_modules(path), "crawler"), f"{path.name} imports crawler"
+
+
+@pytest.mark.parametrize(
+    "path", [p for p in scoring_files() if TRAIN not in p.parents], ids=lambda p: p.name
+)
+def test_the_served_half_of_scoring_never_imports_the_trainer(path):
+    # train/ 只在離線跑，而且拖著 numpy 和 scikit-learn。讓它進伺服器的 import
+    # graph，agent 就開始扛訓練用的依賴。
+    assert not touches(imported_modules(path), "scoring.train"), f"{path.name} imports train"
 
 
 def test_features_stays_a_pure_function_module():

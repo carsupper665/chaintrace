@@ -11,8 +11,13 @@
   2. 盡量用比例而不是絕對值。絕對值會隨收集上限浮動，比例不會。
   3. 「有沒有被截斷」是一個特徵，不是一個要藏起來的祕密。
 
-這裡不連網、不碰資料庫、不載入模型。first_seen 是**參數不是查詢** —— 它要多打
-一次 API，但那是呼叫端的責任。
+金額全程用 int，包含中位數：任何一次 float 除法都會在 2^53 以上悄悄失真。
+
+這裡不連網、不碰資料庫、不載入模型。
+
+曾經有第 23 項「帳戶年齡」，需要為每個地址多打一次 API 拿建立時間。Phase 2 的
+逐項消融測試（五個隨機種子）顯示它讓訊號掉 1.0 個百分點 —— 是所有特徵裡最傷的
+一項。要花成本的特徵必須證明自己值得，它沒有，所以拿掉了。
 """
 
 import math
@@ -60,8 +65,7 @@ FEATURE_NAMES: tuple[str, ...] = (
     "hour_entropy",
     "round_amount_share",
     "repeated_amount_share",
-    # 這三項是原始清單沒有、但值得加的
-    "address_age_log",
+    # 這兩項是原始清單沒有、但值得加的
     "flow_match_share",
     "structuring_share",
     # 覆蓋率本身
@@ -86,7 +90,6 @@ def compute(
     window_start: datetime,
     window_end: datetime,
     truncated: bool = False,
-    first_seen: datetime | None = None,
     decimals: int = USDT_DECIMALS,
 ) -> dict[str, float]:
     """算出 target 的特徵。回傳的鍵剛好是 FEATURE_NAMES。"""
@@ -96,7 +99,7 @@ def compute(
         **_flow(inflow, outflow),
         **_counterparties(inflow, outflow),
         **_rhythm(own, window_start, window_end, decimals, truncated),
-        **_extras(inflow, outflow, first_seen, window_end),
+        **_extras(inflow, outflow),
         "truncated": 1.0 if truncated else 0.0,
     }
 
@@ -218,14 +221,10 @@ def _observed_days(
     return max((times[-1] - times[0]).days, 1)
 
 
-def _extras(
-    inflow: list, outflow: list, first_seen: datetime | None, window_end: datetime
-) -> dict[str, float]:
-    age_days = (window_end - first_seen).days if first_seen else 0
+def _extras(inflow: list, outflow: list) -> dict[str, float]:
     matched = sum(1 for t in inflow if _has_echo(t, outflow))
     structured = sum(1 for t in inflow + outflow if _is_structured(t.amount))
     return {
-        "address_age_log": _log1p(max(age_days, 0)),
         "flow_match_share": _safe_ratio(matched, len(inflow)),
         "structuring_share": _safe_ratio(structured, len(inflow) + len(outflow)),
     }
@@ -252,7 +251,10 @@ def _is_structured(amount: int) -> bool:
     """
     if amount <= 0:
         return False
-    return amount >= 9 * 10 ** (len(str(amount)) - 1)
+    magnitude = 10 ** (len(str(amount)) - 1)
+    # 落在最高那一格（9,900 之於 10,000），但自己不能是整數 ——
+    # 9,000 只是個整數，那是 round_amount_share 的事，不是刻意規避門檻。
+    return amount >= 9 * magnitude and amount % magnitude != 0
 
 
 def _safe_ratio(numerator, denominator) -> float:
@@ -260,8 +262,18 @@ def _safe_ratio(numerator, denominator) -> float:
     return float(numerator) / float(denominator) if denominator else 0.0
 
 
-def _median(values: list) -> float:
-    return statistics.median(values) if values else 0.0
+def _median(values: list):
+    """偶數筆時用整除，不是 statistics.median 的 (a+b)/2。
+
+    那個除法會把金額轉成 float，2^53 以上就開始失真 —— 正是這個模組
+    開頭說「金額全程用 int」要避免的事。"""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) // 2
 
 
 def _cv(values: list) -> float:

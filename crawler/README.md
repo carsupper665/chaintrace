@@ -75,13 +75,12 @@ data/
 `transfers.jsonl.gz` 每一行長這樣：
 
 ```json
-{"address":"T…","created_at":1697615400000,"truncated":false,
+{"address":"T…","truncated":false,
  "transfers":[{"from":"T…","to":"T…","value":"337410000","ts":1788276087000}]}
 ```
 
 - `value` 是最小單位的字串（USDT 六位小數）。**不要轉成 float**，會失真。
 - `truncated` 表示這個地址的轉帳數撞到上限，只拿到一部分。這是模型的特徵之一。
-- `created_at` 是帳戶建立時間，給「帳戶年齡」特徵用。
 
 ## 資料多大
 

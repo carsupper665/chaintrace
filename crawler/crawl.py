@@ -136,7 +136,6 @@ def crawl(client: TronGrid, addresses: list[str], manifest: dict, out, on_done) 
     for index, address in enumerate(addresses, start=1):
         try:
             transfers, truncated = client.transfers(address, start_ms, end_ms, cap)
-            created = client.created_at(address)
         except TronGridError as error:
             print(f"[{index}/{total}] {address} 跳過：{error}", file=sys.stderr, flush=True)
             continue
@@ -144,7 +143,6 @@ def crawl(client: TronGrid, addresses: list[str], manifest: dict, out, on_done) 
             json.dumps(
                 {
                     "address": address,
-                    "created_at": int(created.timestamp() * 1000) if created else None,
                     "truncated": truncated,
                     "transfers": transfers,
                 },
@@ -171,6 +169,13 @@ def main() -> None:
     parser.add_argument("--addresses", type=int, default=1000, help="總目標地址數")
     parser.add_argument("--out", type=pathlib.Path, default=HERE / "data")
     parser.add_argument("--interval", type=float, default=None, help="每次呼叫間隔秒數")
+    parser.add_argument(
+        "--from-file",
+        type=pathlib.Path,
+        help="改爬檔案裡列出的地址（一行一個）而不是抽樣。"
+        " 標籤集要用這個，並先把訓練資料的 manifest.json 複製到 --out，"
+        " 兩邊才會用同一個時間窗口。",
+    )
     arguments = parser.parse_args()
 
     arguments.out.mkdir(parents=True, exist_ok=True)
@@ -190,21 +195,33 @@ def main() -> None:
         print(f"沿用既有資料：已完成 {len(done)} 個地址", flush=True)
 
     client = TronGrid(api_key(), interval=arguments.interval)
-    remaining = max(arguments.addresses - len(done), 0)
-    if not remaining:
-        print(f"已經有 {len(done)} 個地址，達到目標 {arguments.addresses}。")
-        return
 
-    print(f"抽樣中（還缺 {remaining} 個地址，每翻一頁回報一次）…", flush=True)
-    sampled = client.sample_addresses(
-        arguments.addresses + len(done),
-        before_ms=manifest["sampleStartMs"],
-        progress=lambda found, calls: print(
-            f"  已抽到 {found} 個地址（{calls} 次呼叫）", flush=True
-        ),
-    )
-    pending = [a for a in sampled if a not in done][:remaining]
-    print(f"開始爬 {len(pending)} 個地址\n", flush=True)
+    if arguments.from_file:
+        listed = [
+            line.strip()
+            for line in arguments.from_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        pending = [a for a in dict.fromkeys(listed) if a not in done]
+        print(f"清單有 {len(listed)} 個地址，其中 {len(pending)} 個要爬\n", flush=True)
+    else:
+        remaining = max(arguments.addresses - len(done), 0)
+        if not remaining:
+            print(f"已經有 {len(done)} 個地址，達到目標 {arguments.addresses}。")
+            return
+        print(f"抽樣中（還缺 {remaining} 個地址，每翻一頁回報一次）…", flush=True)
+        sampled = client.sample_addresses(
+            arguments.addresses + len(done),
+            before_ms=manifest["sampleStartMs"],
+            progress=lambda found, calls: print(
+                f"  已抽到 {found} 個地址（{calls} 次呼叫）", flush=True
+            ),
+        )
+        pending = [a for a in sampled if a not in done][:remaining]
+        print(f"開始爬 {len(pending)} 個地址\n", flush=True)
+    if not pending:
+        print("沒有要爬的地址。")
+        return
 
     def record_progress(offset: int) -> None:
         manifest["addressCount"] = len(done) + offset

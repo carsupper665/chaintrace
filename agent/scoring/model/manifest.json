@@ -1,0 +1,39 @@
+{
+ "windowStartMs": 1785691388104,
+ "windowEndMs": 1788283388104,
+ "windowDays": 30,
+ "transferCap": 10000,
+ "featureNames": [
+  "in_count_log",
+  "out_count_log",
+  "in_count_share",
+  "net_flow_ratio",
+  "median_amount_log",
+  "amount_cv",
+  "max_inflow_share",
+  "pass_through_share",
+  "median_holding_seconds_log",
+  "in_counterparties_log",
+  "out_counterparties_log",
+  "in_hhi",
+  "out_hhi",
+  "counterparty_reuse_rate",
+  "active_day_ratio",
+  "gap_cv",
+  "hour_entropy",
+  "round_amount_share",
+  "repeated_amount_share",
+  "flow_match_share",
+  "structuring_share",
+  "truncated"
+ ],
+ "trainedOn": 997,
+ "trainingDataHash": "f40ef9a8597df0720bf8b53be7100c01dbfd9376dc7fb95c2266fff19c622511",
+ "blacklistedTop10Percent": 47.7,
+ "exchangesInTop1Percent": 0,
+ "randomState": 20260902,
+ "libraries": {
+  "numpy": "2.5.2",
+  "sklearn": "1.9.0"
+ }
+}

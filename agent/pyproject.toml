@@ -10,6 +10,8 @@ gemini = ["google-genai>=2.3.0"]
 openai = ["openai"]
 anthropic = ["anthropic"]
 dev = ["pytest"]
+# 離線訓練用（scoring/train/）。伺服器不需要，邊界測試盯著這件事。
+train = ["scikit-learn", "joblib"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

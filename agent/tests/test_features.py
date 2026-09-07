@@ -5,7 +5,7 @@
 """
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -49,13 +49,13 @@ def features(transfers=SCENARIO, **overrides) -> dict[str, float]:
 
 
 def test_feature_names_are_unique_and_the_vector_follows_them():
-    assert len(FEATURE_NAMES) == len(set(FEATURE_NAMES)) == 23
+    assert len(FEATURE_NAMES) == len(set(FEATURE_NAMES)) == 22
 
     computed = features()
     assert set(computed) == set(FEATURE_NAMES)
 
     flattened = vector(computed)
-    assert len(flattened) == 23
+    assert len(flattened) == 22
     assert all(flattened[i] == computed[name] for i, name in enumerate(FEATURE_NAMES))
 
 
@@ -139,6 +139,16 @@ def test_structuring_share_catches_amounts_parked_under_a_round_threshold():
         Transfer("A", TARGET, usdt(5000), at(2, 10)),  # 沒有
     ]
     assert features(transfers)["structuring_share"] == pytest.approx(0.5)
+
+
+def test_structuring_share_does_not_count_plain_round_numbers():
+    # 9,000 和 90,000 開頭都是 9，但它們只是整數，不是刻意規避門檻。
+    # 把它們算進來會跟 round_amount_share 重複計算同一件事。
+    transfers = [
+        Transfer("A", TARGET, usdt(9000), at(1, 10)),
+        Transfer("A", TARGET, usdt(90000), at(2, 10)),
+    ]
+    assert features(transfers)["structuring_share"] == pytest.approx(0.0)
     # 共用情境的 100/200/300 都離下緣很遠。
     assert features()["structuring_share"] == pytest.approx(0.0)
 
@@ -148,14 +158,6 @@ def test_flow_match_share_needs_a_near_equal_outflow_soon_after():
     # 100 進來 30 分鐘後有一筆等額轉出；300 那筆之後 36 小時才有轉出，超過 24
     # 小時的搜尋窗，而且金額也對不上。
     assert computed["flow_match_share"] == pytest.approx(1 / 2)
-
-
-def test_address_age_uses_the_supplied_first_seen():
-    # first_seen 是參數不是查詢：帳戶年齡要多打一次 API，但那是呼叫端的事。
-    assert features()["address_age_log"] == pytest.approx(0.0)
-
-    aged = features(first_seen=WINDOW_END - timedelta(days=400))
-    assert aged["address_age_log"] == pytest.approx(math.log1p(400))
 
 
 def test_truncation_is_reported_not_hidden():
@@ -193,6 +195,18 @@ def test_amounts_above_two_to_the_53_stay_distinct():
         Transfer("B", TARGET, 2**53 + 1, at(2, 10)),
     ]
     assert features(transfers)["repeated_amount_share"] == pytest.approx(0.0)
+
+
+def test_the_median_amount_stays_exact_on_an_even_count():
+    # 偶數筆時 statistics.median 會走 (a+b)/2 的 float 除法，2^53 以上就開始
+    # 失真。中位數必須跟其他金額運算一樣全程用 int。
+    transfers = [
+        Transfer("A", TARGET, 2**53, at(1, 10)),
+        Transfer("B", TARGET, 2**53 + 2, at(2, 10)),
+    ]
+    assert features(transfers)["median_amount_log"] == pytest.approx(
+        math.log1p(2**53 + 1), rel=0, abs=1e-12
+    )
 
 
 @pytest.mark.parametrize(

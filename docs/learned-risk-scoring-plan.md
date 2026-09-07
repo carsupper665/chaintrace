@@ -29,7 +29,7 @@ The crawler sits outside `agent/` because it shares no code with anything: it fe
 
 `scoring/features.py` takes a list of Transfers and a Target address and returns a fixed-length vector. It is a pure function: no network, no database, no model.
 
-Twenty-two Depth 0 features. The count is deliberately smaller than the candidate list it came from, because an unsupervised model weighs every feature equally: four ways of saying "how much money" give the amount four times the say of anything else, and the model then ranks exchanges first because they are large rather than because they are odd. Correlated candidates are collapsed into one representative each.
+Twenty-one Depth 0 features. The count is deliberately smaller than the candidate list it came from, because an unsupervised model weighs every feature equally: four ways of saying "how much money" give the amount four times the say of anything else, and the model then ranks exchanges first because they are large rather than because they are odd. Correlated candidates are collapsed into one representative each.
 
 | # | Feature | Note |
 | --- | --- | --- |
@@ -49,14 +49,13 @@ Twenty-two Depth 0 features. The count is deliberately smaller than the candidat
 | 17 | Hour-of-day entropy | |
 | 18 | Round-amount share | |
 | 19 | Repeated-amount share | |
-| 20 | **Address age** | first-ever transfer to now; needs one extra provider call |
-| 21 | **Inflow/outflow amount matching** | share of inflows that pair with a near-equal outflow |
-| 22 | **Structuring share** | amounts clustered just under a round threshold |
+| 20 | **Inflow/outflow amount matching** | share of inflows that pair with a near-equal outflow |
+| 21 | **Structuring share** | amounts clustered just under a round threshold |
 | — | Truncation flag | whether the transfer cap was reached |
 
-Features 20–22 are additions, and 20 is the one worth the most for its cost. An address that first appeared three days ago and has moved two million dollars is a different object from a three-year-old address that moved the same amount, and a trailing 30-day window cannot see the difference. One provider call for the first-ever transfer timestamp buys it.
+A twenty-second feature, address age, was proposed and then removed by the evidence it was supposed to earn: see the Phase 2 results below.
 
-Feature 21 exists because net flow only compares totals. "Received 100, sent 100" and "received 1,000, sent 900" have the same net flow and are not the same behaviour; a forwarding hop shows individual inflows matched by near-equal outflows, which is one of the strongest laundering signals available at Depth 0.
+Feature 20 exists because net flow only compares totals. "Received 100, sent 100" and "received 1,000, sent 900" have the same net flow and are not the same behaviour; a forwarding hop shows individual inflows matched by near-equal outflows, which is one of the strongest laundering signals available at Depth 0.
 
 Three rules that decide whether the model works at all:
 
@@ -68,11 +67,11 @@ Hour-of-day entropy replaces any "night-time ratio": chain timestamps are UTC an
 
 Phase 2 checks the correlation matrix before fitting anything. Any pair still above roughly 0.9 means one of them is redundant and the list above was not aggressive enough.
 
-**Goal.** One pure function turning Transfers plus a Target into a 22-number vector, identical whether it runs in training or in a request.
+**Goal.** One pure function turning Transfers plus a Target into a fixed-length vector, identical whether it runs in training or in a request.
 
 **Accepted when all of these hold:**
 
-1. Each of the 22 features has a test whose expected value was worked out by hand from a small transfer list — not captured from the implementation's own output.
+1. Each of the 21 features has a test whose expected value was worked out by hand from a small transfer list — not captured from the implementation's own output.
 2. Degenerate inputs return a defined value rather than raising: no transfers, inflows only, outflows only, a single transfer, all amounts identical (a zero denominator for every coefficient of variation), and several transfers sharing one timestamp.
 3. Amounts stay exact. A test carries an amount above 2^53 in the Asset's smallest unit and asserts no precision is lost before the final `log1p`.
 4. The same input produces a bit-identical vector on repeated runs.
@@ -124,6 +123,20 @@ Fifty to a hundred known-bad and twenty known-exchange addresses are enough to t
 4. **Veto, and it outranks the signal.** Known exchanges do not form the majority of the top percentile. If they do, the model has learned "large and busy": return to Phase 0 and change features. Moving the threshold is not a fix, it is a way of hiding the result.
 5. An ablation refits without address age and without inflow/outflow matching, and reports how far the signal falls. A feature that costs an extra provider call has to show it earns it.
 6. The saved model carries a manifest: training-set hash, feature-list version, library versions.
+
+### What Phase 2 actually found
+
+Run on 997 sampled addresses and 439 labelled ones, all under the same window and cap.
+
+**The label source had to change.** OFAC's SDN list yields 178 valid TRON addresses, but only three of them moved USDT inside the window: once an address is sanctioned its funds stop moving, so scoring them measures whether the model flags inactivity, not whether it reads behaviour. They score 98.3% into the top decile for exactly that reason, and that number means nothing about detection. The usable source is Tether's own freeze list — the USDT contract's `AddedBlackList` events — because an address is frozen for what it was doing at the time, so it was necessarily active. 245 were frozen inside the window and 83% of them have transfers to compute features from.
+
+**Linear scaling failed the veto outright.** With `RobustScaler`, twelve of the top twenty anomalies were known exchange hot wallets, ranked 2nd, 4th, 7th, 9th and so on. Scaling does not change ratios, so an exchange fifty times the population on transfer count stays fifty times out and Isolation Forest isolates it on size alone. `QuantileTransformer` maps each feature onto its rank in the population: the largest value becomes "top of the distribution" and nothing more. The same exchanges then land between 83rd and 277th of 997, and none appear in the top percentile.
+
+**Address age was removed by its own test.** Leave-one-out across five seeds put every feature within ±1.0 points of the full model, and address age was the worst of them — removing it *raised* the signal by 1.0. It was also the only feature costing an extra provider call per scored address. A feature that costs something has to show it earns it; this one showed the opposite.
+
+**Result.** Blacklisted addresses land in the top decile 47.7% of the time against a 10% baseline, and no exchange appears in the top percentile. Inflow/outflow matching measures nothing on this label set either (47.7% with or without) but is free to compute and describes a pattern these labels may simply not contain, so it stays — on notice.
+
+**Two limitations to carry into Phase 3.** A quiet address scores as anomalous, because inactivity is unusual in a sample drawn from active traffic; that is a false-positive source on legitimate dormant wallets. And 40% of known exchanges still sit in the top decile — they are genuinely unusual, so this is not wrong, but the score alone cannot separate "unusual" from "suspicious". Both are reasons the learned score joins the deterministic reasons rather than replacing them.
 
 ## Phase 3 — Serve it, next to the rules
 
