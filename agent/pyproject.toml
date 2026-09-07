@@ -3,15 +3,17 @@ name = "chaintrace-agent"
 version = "0.1.0"
 description = "ChainTrace LLM Agent — LAN-only sidecar for the Go API"
 requires-python = ">=3.12"
-dependencies = ["fastapi", "uvicorn", "python-dotenv"]
+dependencies = ["fastapi", "uvicorn", "python-dotenv", "scikit-learn", "joblib", "numpy"]
+# scikit-learn/joblib/numpy 原本只在 train extra：POST /v1/score 上線後，伺服器
+# 本身要在 import 時載入 model.joblib，所以搬進基本依賴。訓練專用的依賴（目前
+# 沒有）才進 train extra；test_the_served_half_of_scoring_never_imports_the_trainer
+# 顧的是「不 import scoring.train 這份程式碼」，跟裝哪些套件是兩件事。
 
 [project.optional-dependencies]
 gemini = ["google-genai>=2.3.0"]
 openai = ["openai"]
 anthropic = ["anthropic"]
 dev = ["pytest"]
-# 離線訓練用（scoring/train/）。伺服器不需要，邊界測試盯著這件事。
-train = ["scikit-learn", "joblib"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -5,6 +5,7 @@ import (
 	"chaintrace/analysis"
 	"chaintrace/controller"
 	"chaintrace/middleware"
+	"chaintrace/scoreclient"
 	"chaintrace/utils"
 
 	"github.com/gin-gonic/gin"
@@ -73,7 +74,20 @@ func productionAnalysisOptions() analysis.Options {
 			"TRONGRID_API_KEY is not configured: no chain data provider is available and every Analysis Run will fail with provider_unavailable",
 		)
 	}
-	return analysis.Options{Provider: provider}
+	return analysis.Options{Provider: provider, LearnedScorer: productionLearnedScorer()}
+}
+
+// productionLearnedScorer returns a nil interface — not a nil *scoreclient.Client
+// — when no scorer is configured, the same care as productionAgentProvider.
+// Unlike a missing chain data provider, a missing scorer is not worth a
+// startup warning: it is the accepted default until Phase 3 is deployed with
+// the sidecar, and every run simply completes rules-only.
+func productionLearnedScorer() analysis.LearnedScorer {
+	client := scoreclient.New(scoreclient.ProductionOptions())
+	if client == nil {
+		return nil
+	}
+	return client
 }
 
 func ProductionLimits() Limits {

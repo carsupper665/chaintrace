@@ -31,6 +31,9 @@ const (
 	MaximumTransferLimit            = 5000
 	MaximumTraversalDepth           = 4
 	analysisRunTimeout              = 30 * time.Minute
+	// CollectionWindow is the trailing window collected for both the rules
+	// evaluation and the learned score (ADR-0015: they must agree on window).
+	CollectionWindow = 30 * 24 * time.Hour
 )
 
 var (
@@ -135,7 +138,11 @@ type RiskEvaluator interface {
 type Options struct {
 	Provider     ChainDataProvider
 	Evaluator    RiskEvaluator
-	LaunchWorker func(func())
+	// LearnedScorer is nil when no learned scorer is configured, which means
+	// skip it — unlike Evaluator, nil is never replaced with a default; there
+	// is no rules-equivalent fallback for a learned score.
+	LearnedScorer LearnedScorer
+	LaunchWorker  func(func())
 }
 
 type Run struct {
@@ -153,12 +160,13 @@ type Run struct {
 }
 
 type RunManager struct {
-	mu           sync.RWMutex
-	runs         map[string]*managedRun
-	active       map[string]string
-	provider     ChainDataProvider
-	evaluator    RiskEvaluator
-	launchWorker func(func())
+	mu            sync.RWMutex
+	runs          map[string]*managedRun
+	active        map[string]string
+	provider      ChainDataProvider
+	evaluator     RiskEvaluator
+	learnedScorer LearnedScorer
+	launchWorker  func(func())
 }
 
 type managedRun struct {
@@ -179,11 +187,12 @@ func NewRunManager(options Options) *RunManager {
 		evaluator = RulesV1Evaluator{}
 	}
 	return &RunManager{
-		runs:         make(map[string]*managedRun),
-		active:       make(map[string]string),
-		provider:     options.Provider,
-		evaluator:    evaluator,
-		launchWorker: options.LaunchWorker,
+		runs:          make(map[string]*managedRun),
+		active:        make(map[string]string),
+		provider:      options.Provider,
+		evaluator:     evaluator,
+		learnedScorer: options.LearnedScorer,
+		launchWorker:  options.LaunchWorker,
 	}
 }
 
@@ -370,7 +379,7 @@ func (m *RunManager) execute(ctx context.Context, investigation store.Investigat
 		TargetAddress:  *investigation.Address,
 		Network:        string(investigation.Network),
 		Asset:          AssetUSDT,
-		WindowStart:    cutoff.Timestamp.Add(-30 * 24 * time.Hour),
+		WindowStart:    cutoff.Timestamp.Add(-CollectionWindow),
 		WindowEnd:      cutoff.Timestamp,
 		CutoffBlockID:  cutoff.BlockID,
 		TransferLimit:  scope.TransferLimit,
@@ -403,8 +412,9 @@ func (m *RunManager) execute(ctx context.Context, investigation store.Investigat
 		m.fail(investigation, runID, "evaluation_failed")
 		return
 	}
+	learnedScore, learnedScoreSource := m.attemptLearnedScore(ctx, request)
 	m.progress(runID, "running", "publishing", collected)
-	m.publish(investigation, runID, request, collection, evaluation, collected)
+	m.publish(investigation, runID, request, collection, evaluation, learnedScore, learnedScoreSource, collected)
 }
 
 func (m *RunManager) progress(runID, status, phase string, collected int) {
@@ -434,7 +444,7 @@ func (m *RunManager) fail(investigation store.Investigation, runID, code string)
 	delete(m.active, managed.run.InvestigationID)
 }
 
-func (m *RunManager) publish(investigation store.Investigation, runID string, request CollectionRequest, collection Collection, evaluation Evaluation, collected int) {
+func (m *RunManager) publish(investigation store.Investigation, runID string, request CollectionRequest, collection Collection, evaluation Evaluation, learnedScore *float64, learnedScoreSource string, collected int) {
 	// Claim the terminal transition under the mutex, then commit without it.
 	// Holding the mutex across the publication transaction would block every
 	// poll for as long as the Dataset takes to write.
@@ -449,7 +459,7 @@ func (m *RunManager) publish(investigation store.Investigation, runID string, re
 	managed.publishing = claim
 	m.mu.Unlock()
 
-	datasetID, err := publish(investigation, runID, request, collection, evaluation)
+	datasetID, err := publish(investigation, runID, request, collection, evaluation, learnedScore, learnedScoreSource)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -537,12 +547,14 @@ type MetricsResult struct {
 }
 
 type AssessmentResult struct {
-	Score           *int             `json:"score"`
-	Level           string           `json:"level"`
-	Reasons         []string         `json:"reasons"`
-	NodeAssessments []NodeAssessment `json:"nodeAssessments"`
-	Source          string           `json:"source"`
-	UpdatedAt       time.Time        `json:"updatedAt"`
+	Score              *int             `json:"score"`
+	Level              string           `json:"level"`
+	Reasons            []string         `json:"reasons"`
+	NodeAssessments    []NodeAssessment `json:"nodeAssessments"`
+	Source             string           `json:"source"`
+	LearnedScore       *float64         `json:"learnedScore"`
+	LearnedScoreSource string           `json:"learnedScoreSource"`
+	UpdatedAt          time.Time        `json:"updatedAt"`
 }
 
 type CurrentResult struct {
@@ -608,12 +620,14 @@ func LoadCurrentResult(ownerID uint, investigationID string) (CurrentResult, err
 				},
 			},
 			Assessment: AssessmentResult{
-				Score:           assessment.Score,
-				Level:           assessment.Level,
-				Reasons:         reasons,
-				NodeAssessments: nodes,
-				Source:          assessment.Source,
-				UpdatedAt:       assessment.UpdatedAt,
+				Score:              assessment.Score,
+				Level:              assessment.Level,
+				Reasons:            reasons,
+				NodeAssessments:    nodes,
+				Source:             assessment.Source,
+				LearnedScore:       assessment.LearnedScore,
+				LearnedScoreSource: assessment.LearnedScoreSource,
+				UpdatedAt:          assessment.UpdatedAt,
 			},
 		}
 		return nil
@@ -629,7 +643,7 @@ type calculatedMetrics struct {
 	asset         string
 }
 
-func publish(investigation store.Investigation, runID string, request CollectionRequest, collection Collection, evaluation Evaluation) (string, error) {
+func publish(investigation store.Investigation, runID string, request CollectionRequest, collection Collection, evaluation Evaluation, learnedScore *float64, learnedScoreSource string) (string, error) {
 	metrics, err := calculateMetrics(*investigation.Address, collection)
 	if err != nil {
 		return "", err
@@ -717,6 +731,8 @@ func publish(investigation store.Investigation, runID string, request Collection
 			ReasonsJSON:         string(reasonsJSON),
 			NodeAssessmentsJSON: string(nodesJSON),
 			Source:              evaluation.Source,
+			LearnedScore:        learnedScore,
+			LearnedScoreSource:  learnedScoreSource,
 			UpdatedAt:           now,
 		}
 		if err := tx.Create(&assessment).Error; err != nil {

@@ -89,6 +89,8 @@ export type CurrentAnalysisResult = {
     reasons: string[];
     nodeAssessments: NodeAssessment[];
     source: string;
+    learnedScore: number | null;
+    learnedScoreSource: string;
     updatedAt: string;
   };
 };

@@ -35,10 +35,12 @@ func TestCurrentResultMatchesPublishedContract(t *testing.T) {
 // marshals to null and would hide every field inside it.
 func sampleCurrentResult() analysis.CurrentResult {
 	score := 0
+	learnedScore := 0.0
 	result := analysis.CurrentResult{}
 	result.Assessment.Score = &score
 	result.Assessment.Reasons = []string{""}
 	result.Assessment.NodeAssessments = []analysis.NodeAssessment{{Reasons: []string{""}}}
+	result.Assessment.LearnedScore = &learnedScore
 	return result
 }
 

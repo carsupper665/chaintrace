@@ -17,6 +17,12 @@ from schemas import ChatRequest, ChatResponse
 from session import SessionStore
 from turn import InvalidTurn, SessionExpired, run_turn
 
+try:
+    from scoring.service import router as scoring_router
+except ImportError:
+    # scoring/ 整個被刪掉時，agent 應該照樣啟動，只是少一條路由（見 ADR-0015）。
+    scoring_router = None
+
 ENV_FILE = pathlib.Path(__file__).resolve().parent / ".env"
 
 
@@ -87,6 +93,9 @@ def create_app(*, llm=None, store: SessionStore | None = None) -> FastAPI:
                 status_code=502, content={"code": "llm_error", "message": str(error)}
             )
         return JSONResponse(status_code=200, content=ChatResponse.from_reply(reply).model_dump())
+
+    if scoring_router is not None:
+        app.include_router(scoring_router)
 
     return app
 

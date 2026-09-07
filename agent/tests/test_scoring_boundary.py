@@ -75,10 +75,41 @@ def test_scoring_never_imports_the_llm_side(path):
         assert not touches(modules, side), f"{path.name} imports {side}"
 
 
-@pytest.mark.parametrize("path", server_files(), ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "path", [p for p in server_files() if p.name != "app.py"], ids=lambda p: p.name
+)
 def test_the_llm_side_never_imports_scoring(path):
-    # 這是「刪掉 scoring/ 仍然開得起來」的靜態證明。
+    # 這是「刪掉 scoring/ 仍然開得起來」的靜態證明。app.py 是計畫裡指定的接點
+    # （docs/learned-risk-scoring-plan.md、ADR-0015），它 import scoring.service
+    # 是刻意的，用下面 test_app_imports_scoring_defensively 顧著這件事該有的樣子。
     assert not touches(imported_modules(path), "scoring"), f"{path.name} imports scoring"
+
+
+def _guards_a_scoring_import(node: ast.Try) -> bool:
+    imports_scoring = any(
+        isinstance(child, ast.ImportFrom) and child.module and touches({child.module}, "scoring")
+        for statement in node.body
+        for child in ast.walk(statement)
+    )
+    catches_import_error = any(
+        handler.type is None
+        or (isinstance(handler.type, ast.Name) and handler.type.id == "ImportError")
+        for handler in node.handlers
+    )
+    return imports_scoring and catches_import_error
+
+
+def test_app_imports_scoring_defensively():
+    """app.py 對 scoring 的 import 必須包在 try/except ImportError 裡：
+
+    刪掉整個 scoring/ 目錄時，這個 import 要失敗得安靜，app 才能照樣啟動、
+    只是少一條路由（Phase 3 驗收條件）。裸的 import 會讓刪除變成啟動時崩潰。
+    """
+    tree = ast.parse((AGENT / "app.py").read_text(encoding="utf-8"))
+    guarded = any(
+        _guards_a_scoring_import(node) for node in ast.walk(tree) if isinstance(node, ast.Try)
+    )
+    assert guarded, "app.py must import scoring inside a try/except ImportError"
 
 
 @pytest.mark.parametrize("path", server_files() + scoring_files(), ids=lambda p: p.name)

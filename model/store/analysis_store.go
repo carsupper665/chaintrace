@@ -68,9 +68,18 @@ type Assessment struct {
 	DatasetID           string          `gorm:"type:varchar(24);primaryKey"`
 	Dataset             AnalysisDataset `gorm:"foreignKey:DatasetID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 	Score               *int
-	Level               string    `gorm:"size:32"`
-	ReasonsJSON         string    `gorm:"type:text;not null"`
-	NodeAssessmentsJSON string    `gorm:"type:text;not null"`
-	Source              string    `gorm:"size:64;not null"`
-	UpdatedAt           time.Time `gorm:"not null"`
+	Level               string `gorm:"size:32"`
+	ReasonsJSON         string `gorm:"type:text;not null"`
+	NodeAssessmentsJSON string `gorm:"type:text;not null"`
+	Source              string `gorm:"size:64;not null"`
+	// LearnedScore is the unsupervised model's anomaly score (ADR-0015), stored
+	// alongside Score rather than in place of it. It is an unbounded signed
+	// float, not a 0-100 rules-style score, and nil whenever no scorer was
+	// configured or the attempt failed — that is not an error for the run.
+	LearnedScore *float64
+	// LearnedScoreSource echoes the model manifest's trainingDataHash so a
+	// stored score can be traced to the artifact that produced it. "" when
+	// LearnedScore is nil.
+	LearnedScoreSource string    `gorm:"size:64"`
+	UpdatedAt          time.Time `gorm:"not null"`
 }
