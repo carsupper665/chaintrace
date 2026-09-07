@@ -21,7 +21,6 @@ class ScoreRequest(BaseModel):
     window_start_ms: int
     window_end_ms: int
     truncated: bool = False
-    decimals: int = 6
     transfers: list[TransferIn] = Field(default_factory=list)
 
 

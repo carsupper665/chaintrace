@@ -15,12 +15,9 @@ import (
 func testInput() analysis.LearnedScoreInput {
 	return analysis.LearnedScoreInput{
 		TargetAddress: "TTarget",
-		Network:       "TRON_MAINNET",
-		Asset:         "USDT",
 		WindowStart:   time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
 		WindowEnd:     time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
 		Truncated:     false,
-		Decimals:      6,
 		Transfers: []analysis.TRC20Transfer{
 			{
 				FromAddress: "TFrom",
@@ -47,7 +44,7 @@ func TestScoreRoundTrip(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(Options{BaseURL: server.URL, SharedKey: "secret"})
+	client := New(server.URL, "secret")
 	if client == nil {
 		t.Fatal("client disabled despite configuration")
 	}
@@ -76,7 +73,7 @@ func TestScoreNon200IsAnError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(Options{BaseURL: server.URL, SharedKey: "wrong"})
+	client := New(server.URL, "wrong")
 	_, err := client.Score(context.Background(), testInput())
 	if err == nil || !strings.Contains(err.Error(), "unauthorized") {
 		t.Errorf("Score() error = %v, want it to mention unauthorized", err)
@@ -89,21 +86,53 @@ func TestScoreMalformedJSONIsAnError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(Options{BaseURL: server.URL, SharedKey: "secret"})
+	client := New(server.URL, "secret")
 	if _, err := client.Score(context.Background(), testInput()); err == nil {
 		t.Error("Score() error = nil, want an error for malformed JSON")
 	}
 }
 
-func TestScoreTimeoutIsAnError(t *testing.T) {
+// A 200 carrying no model version is not a scoring reply: `{}` decodes into a
+// zero score that would otherwise be stored as a real measurement.
+func TestScoreWithoutAModelVersionIsAnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "secret")
+	if _, err := client.Score(context.Background(), testInput()); err == nil {
+		t.Error("Score() error = nil, want an error for a reply with no model version")
+	}
+}
+
+// The caller's context is what actually bounds the attempt in production
+// (attemptLearnedScore carves one), so that is what this exercises.
+func TestScoreHonoursTheCallersDeadline(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
 		_ = json.NewEncoder(w).Encode(scoreResponseWire{Score: 0, ModelVersion: "abc"})
 	}))
 	defer server.Close()
 
-	client := New(Options{BaseURL: server.URL, SharedKey: "secret", HTTPTimeout: 5 * time.Millisecond})
-	if _, err := client.Score(context.Background(), testInput()); err == nil {
-		t.Error("Score() error = nil, want a timeout error")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	client := New(server.URL, "secret")
+	if _, err := client.Score(ctx, testInput()); err == nil {
+		t.Error("Score() error = nil, want a deadline error")
+	}
+}
+
+func TestNewReturnsNilWhenNotConfigured(t *testing.T) {
+	for name, config := range map[string][2]string{
+		"absent":        {"", ""},
+		"onlyBaseURL":   {"http://127.0.0.1:7795", ""},
+		"onlySharedKey": {"", "secret"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if client := New(config[0], config[1]); client != nil {
+				t.Errorf("New(%q, %q) = %v, want nil", config[0], config[1], client)
+			}
+		})
 	}
 }

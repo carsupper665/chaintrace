@@ -79,11 +79,14 @@ func productionAnalysisOptions() analysis.Options {
 
 // productionLearnedScorer returns a nil interface — not a nil *scoreclient.Client
 // — when no scorer is configured, the same care as productionAgentProvider.
-// Unlike a missing chain data provider, a missing scorer is not worth a
-// startup warning: it is the accepted default until Phase 3 is deployed with
-// the sidecar, and every run simply completes rules-only.
+// It is the same sidecar, so it reuses the Agent's own two variables rather
+// than inventing more. A missing scorer is not worth a startup warning: every
+// run simply completes rules-only.
 func productionLearnedScorer() analysis.LearnedScorer {
-	client := scoreclient.New(scoreclient.ProductionOptions())
+	client := scoreclient.New(
+		utils.GetEnvString("AGENT_BASE_URL", ""),
+		utils.GetEnvString("AGENT_SHARED_KEY", ""),
+	)
 	if client == nil {
 		return nil
 	}

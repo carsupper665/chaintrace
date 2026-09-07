@@ -91,25 +91,29 @@ def _guards_a_scoring_import(node: ast.Try) -> bool:
         for statement in node.body
         for child in ast.walk(statement)
     )
-    catches_import_error = any(
+    # 只接 ImportError 不算數：service.py 在 import 期就 joblib.load，缺檔是
+    # FileNotFoundError，模型跟 features.py 對不上是 RuntimeError。兩個都會漏掉。
+    catches_everything = any(
         handler.type is None
-        or (isinstance(handler.type, ast.Name) and handler.type.id == "ImportError")
+        or (isinstance(handler.type, ast.Name) and handler.type.id == "Exception")
         for handler in node.handlers
     )
-    return imports_scoring and catches_import_error
+    return imports_scoring and catches_everything
 
 
 def test_app_imports_scoring_defensively():
-    """app.py 對 scoring 的 import 必須包在 try/except ImportError 裡：
+    """app.py 對 scoring 的 import 必須包在 try/except Exception 裡。
 
-    刪掉整個 scoring/ 目錄時，這個 import 要失敗得安靜，app 才能照樣啟動、
-    只是少一條路由（Phase 3 驗收條件）。裸的 import 會讓刪除變成啟動時崩潰。
+    scoring/ 被刪掉、模型檔不見、或模型跟 features.py 對不上時，agent 都要照樣
+    啟動，只是少一條路由（Phase 3 驗收條件）。這裡刻意不接受只寫 ImportError：
+    那是實際發生過的 bug —— import 期的 joblib.load 丟的是 FileNotFoundError，
+    整個 sidecar 會連聊天一起起不來。
     """
     tree = ast.parse((AGENT / "app.py").read_text(encoding="utf-8"))
     guarded = any(
         _guards_a_scoring_import(node) for node in ast.walk(tree) if isinstance(node, ast.Try)
     )
-    assert guarded, "app.py must import scoring inside a try/except ImportError"
+    assert guarded, "app.py must import scoring inside a try/except Exception"
 
 
 @pytest.mark.parametrize("path", server_files() + scoring_files(), ids=lambda p: p.name)

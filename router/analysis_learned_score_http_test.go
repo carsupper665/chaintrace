@@ -192,6 +192,60 @@ func TestSuccessfulLearnedScoreIsRecordedBesideRulesScore(t *testing.T) {
 	}
 }
 
+// TestTargetWithNoOwnTransfersIsNotScored guards the worst failure this
+// feature can produce. Every feature collapses to zero on an empty history,
+// which the model reads as profoundly unusual — measured against the real
+// artifact, an empty address scores in the top 0.2% of the training baseline.
+// Publishing that beside the rules path's own "insufficient evidence" verdict
+// would put an alarm and a shrug on the same record.
+func TestTargetWithNoOwnTransfersIsNotScored(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	migrateAnalysisTestTables(t)
+	cutoff := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
+	provider := successfulProvider(cutoff)
+	provider.fetch = func(ctx context.Context, request analysis.AddressTransferPageRequest) (analysis.AddressTransferPage, error) {
+		// The learned-score fetch (its own depth-1 signature) finds nothing;
+		// the rules path still collects normally.
+		if request.TraversalDepth == 1 {
+			return analysis.AddressTransferPage{}, nil
+		}
+		if request.Address != testTargetAddress || request.Cursor != "" {
+			return analysis.AddressTransferPage{}, nil
+		}
+		collection, err := provider.Collect(ctx, analysis.CollectionRequest{
+			TargetAddress: request.Address, Network: request.Network, Asset: request.Asset,
+			WindowStart: request.WindowStart, WindowEnd: request.WindowEnd,
+			CutoffBlockID: request.CutoffBlockID, TransferLimit: request.TransferLimit,
+			TraversalDepth: request.TraversalDepth,
+		})
+		if err != nil {
+			return analysis.AddressTransferPage{}, err
+		}
+		return analysis.AddressTransferPage{Transactions: collection.Transactions}, nil
+	}
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithAnalysisOptions(test.engine, analysis.Options{
+		Provider:  provider,
+		Evaluator: successfulEvaluator(),
+		LearnedScorer: fixtureLearnedScorer{
+			result: analysis.LearnedScoreResult{Score: 0.6771, Source: "should-not-be-reached"},
+		},
+	})
+	token := ownerToken(t, test.owner.ID)
+	investigationID := createTargetedInvestigation(t, test, token)
+
+	completed := startAndCompleteRun(t, test, token, investigationID)
+	if completed.Status != "completed" || completed.ResultID == nil {
+		t.Fatalf("run with an empty learned-score fetch = %#v", completed)
+	}
+
+	assessment := fetchCurrentAssessment(t, test, token, investigationID)
+	if assessment.LearnedScore != nil || assessment.LearnedScoreSource != "" {
+		t.Errorf("learnedScore = %v/%q, want nil/\"\" for a target with no transfers of its own",
+			assessment.LearnedScore, assessment.LearnedScoreSource)
+	}
+}
+
 // TestNilLearnedScorerBehavesExactlyAsBefore pins the no-op path: no
 // LearnedScorer configured (the zero value, same as every test written
 // before Phase 3) must not touch the provider at all for the learned-score

@@ -27,13 +27,10 @@ const (
 // graph traversal, plus the window it was collected under.
 type LearnedScoreInput struct {
 	TargetAddress string
-	Network       string
-	Asset         string
 	WindowStart   time.Time
 	WindowEnd     time.Time
 	Transfers     []TRC20Transfer
 	Truncated     bool
-	Decimals      int
 }
 
 // LearnedScoreResult is the unsupervised model's anomaly score. Source
@@ -51,39 +48,47 @@ type LearnedScorer interface {
 	Score(context.Context, LearnedScoreInput) (LearnedScoreResult, error)
 }
 
-// attemptLearnedScore tries to compute a learned score for the run's target
-// and never returns an error: any failure (fetch, scorer call, timeout) is
-// logged and swallowed, leaving the run to complete rules-only. This is what
+// attemptLearnedScore returns nil rather than an error whenever a learned
+// score is unavailable: a failed fetch, a failed scorer call, a timeout, or
+// no scorer configured all leave the run to complete rules-only. This is what
 // makes "a scorer returning 5xx, or timing out, leaves the run completed with
 // rules only" true structurally rather than by convention.
-func (m *RunManager) attemptLearnedScore(ctx context.Context, request CollectionRequest) (*float64, string) {
+func (m *RunManager) attemptLearnedScore(ctx context.Context, request CollectionRequest) *LearnedScoreResult {
 	if m.learnedScorer == nil {
-		return nil, ""
+		return nil
 	}
 	scoreCtx, cancel := context.WithTimeout(ctx, learnedScoreTimeout)
 	defer cancel()
+	// This fetch is a second, independent walk over the provider, so it needs
+	// its own call budget: without one it spends the paid, rate-limited quota
+	// the rules path carefully bounds. Exhausting it just means no learned
+	// score, which is already the graceful path.
+	scoreCtx = withCallBudget(scoreCtx, LearnedScoreTransferCap)
 
 	transfers, truncated, err := fetchTargetOwnTransfers(scoreCtx, m.provider, request, LearnedScoreTransferCap)
 	if err != nil {
 		logLearnedScoreFailure("fetch", err)
-		return nil, ""
+		return nil
+	}
+	// No evidence, no measurement. Every feature collapses to zero on an empty
+	// history, which the model reads as profoundly unusual — it would publish a
+	// top-percentile anomaly beside the rules path's own "insufficient
+	// evidence" verdict for the same address (see publish()).
+	if len(transfers) == 0 {
+		return nil
 	}
 	result, err := m.learnedScorer.Score(scoreCtx, LearnedScoreInput{
 		TargetAddress: request.TargetAddress,
-		Network:       request.Network,
-		Asset:         request.Asset,
 		WindowStart:   request.WindowStart,
 		WindowEnd:     request.WindowEnd,
 		Transfers:     transfers,
 		Truncated:     truncated,
-		Decimals:      6, // TRC20 USDT is fixed at 6 decimals (analysis/collector.go filters on the same literal)
 	})
 	if err != nil {
 		logLearnedScoreFailure("score", err)
-		return nil, ""
+		return nil
 	}
-	score := result.Score
-	return &score, result.Source
+	return &result
 }
 
 // fetchTargetOwnTransfers pages through exactly one address's own transfers,
@@ -96,15 +101,15 @@ func (m *RunManager) attemptLearnedScore(ctx context.Context, request Collection
 // TransferLimit passed to the provider is MaximumTransferLimit, a legal
 // per-page size cap (analysis/trongrid.go rejects anything larger) — it does
 // not bound the total collected here, which this loop enforces itself
-// against cap.
+// against limit.
 func fetchTargetOwnTransfers(
-	ctx context.Context, provider ChainDataProvider, request CollectionRequest, cap int,
+	ctx context.Context, provider ChainDataProvider, request CollectionRequest, limit int,
 ) (transfers []TRC20Transfer, truncated bool, err error) {
 	if provider == nil {
 		return nil, false, errors.New("chain data provider is not configured")
 	}
 	seenTransfers := make(map[string]struct{})
-	transfers = make([]TRC20Transfer, 0, cap)
+	transfers = make([]TRC20Transfer, 0, limit)
 	cursor := ""
 	seenCursors := map[string]struct{}{"": {}}
 	for {
@@ -132,8 +137,12 @@ func fetchTargetOwnTransfers(
 			}
 			seenTransfers[key] = struct{}{}
 			transfers = append(transfers, candidate.transfer)
-			if len(transfers) == cap {
-				return transfers, true, nil
+			if len(transfers) == limit {
+				// Truncated only if there is genuinely more to fetch. Claiming
+				// it on an address that happens to hold exactly the cap would
+				// change active_day_ratio's denominator (features.py's
+				// _observed_days) against what training computed.
+				return transfers, page.NextCursor != "", nil
 			}
 		}
 		if page.NextCursor == "" {

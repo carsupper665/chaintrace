@@ -412,9 +412,9 @@ func (m *RunManager) execute(ctx context.Context, investigation store.Investigat
 		m.fail(investigation, runID, "evaluation_failed")
 		return
 	}
-	learnedScore, learnedScoreSource := m.attemptLearnedScore(ctx, request)
+	learned := m.attemptLearnedScore(ctx, request)
 	m.progress(runID, "running", "publishing", collected)
-	m.publish(investigation, runID, request, collection, evaluation, learnedScore, learnedScoreSource, collected)
+	m.publish(investigation, runID, request, collection, evaluation, learned, collected)
 }
 
 func (m *RunManager) progress(runID, status, phase string, collected int) {
@@ -444,7 +444,7 @@ func (m *RunManager) fail(investigation store.Investigation, runID, code string)
 	delete(m.active, managed.run.InvestigationID)
 }
 
-func (m *RunManager) publish(investigation store.Investigation, runID string, request CollectionRequest, collection Collection, evaluation Evaluation, learnedScore *float64, learnedScoreSource string, collected int) {
+func (m *RunManager) publish(investigation store.Investigation, runID string, request CollectionRequest, collection Collection, evaluation Evaluation, learned *LearnedScoreResult, collected int) {
 	// Claim the terminal transition under the mutex, then commit without it.
 	// Holding the mutex across the publication transaction would block every
 	// poll for as long as the Dataset takes to write.
@@ -459,7 +459,7 @@ func (m *RunManager) publish(investigation store.Investigation, runID string, re
 	managed.publishing = claim
 	m.mu.Unlock()
 
-	datasetID, err := publish(investigation, runID, request, collection, evaluation, learnedScore, learnedScoreSource)
+	datasetID, err := publish(investigation, runID, request, collection, evaluation, learned)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -643,7 +643,7 @@ type calculatedMetrics struct {
 	asset         string
 }
 
-func publish(investigation store.Investigation, runID string, request CollectionRequest, collection Collection, evaluation Evaluation, learnedScore *float64, learnedScoreSource string) (string, error) {
+func publish(investigation store.Investigation, runID string, request CollectionRequest, collection Collection, evaluation Evaluation, learned *LearnedScoreResult) (string, error) {
 	metrics, err := calculateMetrics(*investigation.Address, collection)
 	if err != nil {
 		return "", err
@@ -731,9 +731,12 @@ func publish(investigation store.Investigation, runID string, request Collection
 			ReasonsJSON:         string(reasonsJSON),
 			NodeAssessmentsJSON: string(nodesJSON),
 			Source:              evaluation.Source,
-			LearnedScore:        learnedScore,
-			LearnedScoreSource:  learnedScoreSource,
 			UpdatedAt:           now,
+		}
+		if learned != nil {
+			score := learned.Score
+			assessment.LearnedScore = &score
+			assessment.LearnedScoreSource = learned.Source
 		}
 		if err := tx.Create(&assessment).Error; err != nil {
 			return err

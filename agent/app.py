@@ -1,12 +1,16 @@
 """ChainTrace LLM Agent —— 只綁內網的 sidecar。
 
 邊界（見 docs/development-rules.md 第 2、5 節）：
-  不連資料庫、不驗身分、不判斷 Owner 權限、不算分數。
+  不連資料庫、不驗身分、不判斷 Owner 權限。
   Go 打過來的請求一律視為已授權；共用密鑰只是確認來源是 Go，不是授權機制。
+
+唯一的例外是 POST /v1/score：學習式風險分數在這個 process 裡算（ADR-0015），
+但它仍然不碰資料庫、不驗身分，分數也不取代 Go 那條決定性的 Risk Score。
 """
 
 import os
 import pathlib
+import sys
 
 from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse
@@ -19,8 +23,15 @@ from turn import InvalidTurn, SessionExpired, run_turn
 
 try:
     from scoring.service import router as scoring_router
-except ImportError:
-    # scoring/ 整個被刪掉時，agent 應該照樣啟動，只是少一條路由（見 ADR-0015）。
+except Exception as error:  # noqa: BLE001
+    # scoring/ 被刪掉、模型檔不見、或模型跟 features.py 對不上時，agent 都要照樣
+    # 啟動，只是少一條路由（見 ADR-0015）。只接 ImportError 不夠：service.py 在
+    # import 期就 joblib.load，缺檔是 FileNotFoundError，特徵漂移是 RuntimeError，
+    # 兩個都會讓整個 sidecar 連聊天一起起不來。
+    #
+    # 印出來而不是安靜吞掉：不然 scoring/ 裡真的有 bug 時，線上只會少一條路由，
+    # 沒有任何線索。
+    print(f"scoring route disabled: {error!r}", file=sys.stderr, flush=True)
     scoring_router = None
 
 ENV_FILE = pathlib.Path(__file__).resolve().parent / ".env"

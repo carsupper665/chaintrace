@@ -1,21 +1,36 @@
+// Package scoreclient calls the Python Agent sidecar's POST /v1/score route —
+// the learned risk scorer (docs/adr/0015-learned-risk-scoring-alongside-rules.md).
+//
+// It is a separate, small package from agentclient rather than folded into
+// it: agentclient speaks the chat/tool-loop protocol to the same sidecar
+// process, an unrelated and much larger concern. This package's only job is
+// one request, one response.
 package scoreclient
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"chaintrace/analysis"
 )
 
-// maximumScoreResponse bounds what the scoring route can make this process
-// allocate. The reply is one float and a hash string, unlike agentclient's
-// chat reply — a small cap is generous.
-const maximumScoreResponse = 16 << 10
+const (
+	// maximumScoreResponse bounds what the scoring route can make this process
+	// allocate. The reply is one float and a hash string, unlike agentclient's
+	// chat reply — a small cap is generous.
+	maximumScoreResponse = 16 << 10
+	// scoreTimeout bounds one call to the sidecar, the 30 seconds
+	// docs/development-rules.md section 8 sets for every Go call into Python.
+	// The caller's context bounds the whole attempt.
+	scoreTimeout = 30 * time.Second
+)
 
 type transferWire struct {
 	FromAddress string `json:"from_address"`
@@ -31,7 +46,6 @@ type scoreRequestWire struct {
 	WindowStartMs int64          `json:"window_start_ms"`
 	WindowEndMs   int64          `json:"window_end_ms"`
 	Truncated     bool           `json:"truncated"`
-	Decimals      int            `json:"decimals"`
 	Transfers     []transferWire `json:"transfers"`
 }
 
@@ -52,19 +66,20 @@ type Client struct {
 	client    *http.Client
 }
 
-// New returns nil when no scorer is configured, the same "untyped nil means
-// disabled" convention as agentclient.New — callers must assign the result to
-// a analysis.LearnedScorer variable carefully so a nil *Client does not
-// become a non-nil interface wrapping a nil pointer.
-func New(options Options) *Client {
-	if !options.Enabled() {
+// New returns nil when the sidecar is not configured, the same "untyped nil
+// means disabled" convention as agentclient.New — callers must assign the
+// result to an analysis.LearnedScorer variable carefully so a nil *Client
+// does not become a non-nil interface wrapping a nil pointer. Both values are
+// required: an unauthenticated sidecar would accept requests from anything on
+// the LAN.
+func New(baseURL, sharedKey string) *Client {
+	if baseURL == "" || sharedKey == "" {
 		return nil
 	}
-	options = options.withDefaults()
 	return &Client{
-		baseURL:   strings.TrimRight(options.BaseURL, "/"),
-		sharedKey: options.SharedKey,
-		client:    &http.Client{Timeout: options.HTTPTimeout},
+		baseURL:   strings.TrimRight(baseURL, "/"),
+		sharedKey: sharedKey,
+		client:    &http.Client{Timeout: scoreTimeout},
 	}
 }
 
@@ -83,7 +98,6 @@ func (c *Client) Score(ctx context.Context, input analysis.LearnedScoreInput) (a
 		WindowStartMs: input.WindowStart.UnixMilli(),
 		WindowEndMs:   input.WindowEnd.UnixMilli(),
 		Truncated:     input.Truncated,
-		Decimals:      input.Decimals,
 		Transfers:     transfers,
 	})
 	if err != nil {
@@ -115,6 +129,12 @@ func decodeScoreResponse(status int, raw []byte) (analysis.LearnedScoreResult, e
 		var reply scoreResponseWire
 		if err := json.Unmarshal(raw, &reply); err != nil {
 			return analysis.LearnedScoreResult{}, fmt.Errorf("scorer returned malformed JSON: %w", err)
+		}
+		// An empty model_version means this was not a scoring reply at all —
+		// `{}` decodes happily into a zero score, which would otherwise be
+		// stored as a real measurement.
+		if reply.ModelVersion == "" {
+			return analysis.LearnedScoreResult{}, errors.New("scorer reply carries no model version")
 		}
 		return analysis.LearnedScoreResult{Score: reply.Score, Source: reply.ModelVersion}, nil
 	}

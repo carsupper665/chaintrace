@@ -59,13 +59,14 @@ def compute_vector(payload: ScoreRequest) -> tuple[float, ...]:
     同一份程式碼，只是輸入從讀檔換成請求本文。train/serve 一致性測試比對的
     就是這個函式的輸出跟離線算出來的向量是否逐欄相同。"""
     transfers = [_to_transfer(t) for t in payload.transfers]
+    # decimals 不走線上：TRC20 USDT 固定 6 位，features.compute 的預設就是它，
+    # 訓練時也是同一個預設。讓它變成參數只是讓兩邊多一個可以對不上的東西。
     features = compute(
         transfers,
         payload.target_address,
         window_start=_moment(payload.window_start_ms),
         window_end=_moment(payload.window_end_ms),
         truncated=payload.truncated,
-        decimals=payload.decimals,
     )
     return vector(features)
 

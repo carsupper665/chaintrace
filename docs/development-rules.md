@@ -19,9 +19,11 @@
 | --- | --- | --- |
 | Next.js BFF `:3000` | 畫面、掛上 Owner 憑證、代理 `/api/*` | 不放商業邏輯、不直接連 DB、不直接打 Python |
 | Go API `:7794` | 認證、授權、持久化、鏈上證據、Risk Score、**執行所有資料存取** | 不呼叫 LLM、不組 prompt |
-| Python Agent `:7795` | 組 prompt、呼叫 LLM、管理 session 上下文 | 不連 DB、不驗身分、不算分數、不持有 Owner 資訊 |
+| Python Agent `:7795` | 組 prompt、呼叫 LLM、管理 session 上下文、算學習式風險分數 | 不連 DB、不驗身分、不改對外的 Risk Score、不持有 Owner 資訊 |
 
 **Python 不執行資料存取，只能「請求」。** 它可以說「我要展開這個節點」，但取資料的是 Go，審核的也是 Go。Python 全程沒有 DB 連線、沒有 Owner 身分、沒有憑證。
+
+「不算分數」這條在 [ADR-0015](adr/0015-learned-risk-scoring-alongside-rules.md) 之後有一個明確的例外：學習式風險分數在 Python 算，因為特徵計算的程式碼訓練與線上必須是同一份。但它仍然是純函式 —— 收到 Go 給的轉帳，回一個數字，不碰 DB、不驗身分。**對外公布的 Risk Score 依然只由 Go 的決定性規則決定**（第 9 節那條線沒有動）。
 
 依賴方向：BFF → Go → Python。Python 的回應可以夾帶 tool 請求，但那是回應的一部分，不是它主動發起的呼叫。
 
@@ -102,8 +104,10 @@ Agent 無法據以行動的拒絕等於死路。
 - 端點放在 `/v1/` 底下。破壞相容性就升版號，不要偷改既有欄位語意。
 - Go 側型別以 `controller.AgentProvider`（`controller/conversation.go`）為準，JSON 欄位跟著它走。
 - 新增欄位一律可選，舊版收到不認得的欄位要能忽略。
-- 端點越少越好。目前只需要兩個：
+- 端點越少越好。目前只需要三個：
   - `POST /v1/agent/chat` — 一個對話回合，回應可含 `tool_calls`
+  - `POST /v1/score` — 一批轉帳換一個學習式風險分數（ADR-0015）。刪掉 `scoring/`
+    這條路由就消失，agent 其他部分照常運作
   - `GET /healthz` — 活著沒
 
 ## 8. 失敗處理
