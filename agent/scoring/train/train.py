@@ -42,6 +42,9 @@ RANDOM_STATE = 20260902
 # 驗收門檻，來自 docs/learned-risk-scoring-plan.md：壞地址落在前 10% 的比例
 # 要達到隨機（10%）的三倍左右。這個數字不准為了讓結果好看而調低。
 SIGNAL_THRESHOLD = 30.0
+# 拔靴法（bootstrap）重抽次數。標籤只有兩百來個，單一次算出來的訊號比例
+# 可能只是抽樣運氣，不是模型真的學到東西，要重抽很多次才看得出來晃多大。
+BOOTSTRAP_ITERATIONS = 10000
 # 兩個特徵相關到這個程度就是同一件事講兩次，模型會重複加權它。
 MAX_CORRELATION = 0.9
 # 我在原始候選清單外加的特徵，消融測試逼它證明自己值得。
@@ -74,6 +77,24 @@ def signal(baseline_scores, target_scores) -> float:
     """目標分數落在基準分佈前 10% 的比例。隨機的話會是 0.10。"""
     threshold = np.quantile(baseline_scores, 0.90)
     return float(np.mean(target_scores >= threshold)) if len(target_scores) else 0.0
+
+
+def bootstrap_signal_ci(base_scores, target_scores, iterations=BOOTSTRAP_ITERATIONS, seed=RANDOM_STATE):
+    """對 signal() 那個比例做拔靴法，回傳 95% 信心區間 (下界, 上界)。
+
+    重抽基準跟目標各自的分數很多次，每次都重算一次比例，看晃多大 ——
+    區間夠窄，數字才站得住腳；區間寬到蓋過門檻，就只是抽樣運氣。
+    """
+    rng = np.random.default_rng(seed)
+    base = np.asarray(base_scores)
+    target = np.asarray(target_scores)
+    hits = np.empty(iterations)
+    for i in range(iterations):
+        hits[i] = signal(
+            rng.choice(base, size=len(base), replace=True),
+            rng.choice(target, size=len(target), replace=True),
+        )
+    return float(np.percentile(hits, 2.5)), float(np.percentile(hits, 97.5))
 
 
 def correlated_pairs(rows) -> list[tuple[float, str, str]]:
@@ -147,6 +168,13 @@ def main() -> None:
     # 模型會把「沒有活動」判成異常，那是另一個問題，不是行為偵測。
     hit = signal(base_scores, scores_for("blacklisted")) * 100
     print(f"訊號  被凍結地址落在前 10%：{hit:.1f}%   （隨機 10%，目標 ~30%）")
+    ci_low, ci_high = bootstrap_signal_ci(base_scores, scores_for("blacklisted"))
+    print(
+        f"      95% 信心區間：{ci_low * 100:.1f}% ~ {ci_high * 100:.1f}%"
+        f"（拔靴法重抽 {BOOTSTRAP_ITERATIONS} 次）"
+    )
+    if ci_low * 100 < SIGNAL_THRESHOLD:
+        print(f"      注意：區間下界低於門檻 {SIGNAL_THRESHOLD}%，這個訊號還不夠穩")
     print(
         f"      （參考：被制裁地址 {signal(base_scores, scores_for('sanctioned')) * 100:.1f}%，"
         "但它們 98% 休眠，這個數字只反映「沒有活動也算異常」）"
@@ -197,6 +225,7 @@ def main() -> None:
                     (arguments.data / "transfers.jsonl.gz").read_bytes()
                 ).hexdigest(),
                 "blacklistedTop10Percent": round(hit, 1),
+                "blacklistedTop10PercentCI": [round(ci_low * 100, 1), round(ci_high * 100, 1)],
                 "exchangesInTop1Percent": exchanges_on_top,
                 "randomState": RANDOM_STATE,
                 "libraries": {

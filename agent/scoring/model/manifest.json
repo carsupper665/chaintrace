@@ -30,6 +30,10 @@
  "trainedOn": 997,
  "trainingDataHash": "f40ef9a8597df0720bf8b53be7100c01dbfd9376dc7fb95c2266fff19c622511",
  "blacklistedTop10Percent": 47.7,
+ "blacklistedTop10PercentCI": [
+  40.2,
+  53.5
+ ],
  "exchangesInTop1Percent": 0,
  "randomState": 20260902,
  "libraries": {
