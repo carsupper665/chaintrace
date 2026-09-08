@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -44,7 +45,7 @@ type EmailChallengeStore struct {
 	cache               map[string]VerifyLoginCache
 	tokenCache          map[string]VerifyTokenCache
 	Mu                  sync.RWMutex
-	sendVerification    func(email, username, verificationURL string) error
+	sendVerification    func(email, username, verificationURL string, validFor time.Duration) error
 	frontendBaseURL     string
 	verificationBaseURL string
 	now                 func() time.Time
@@ -62,7 +63,10 @@ const (
 )
 
 type AuthOptions struct {
-	SendVerification func(email, username, verificationURL string) error
+	// SendVerification receives the challenge's own lifetime so the email can
+	// state an expiry that is true by construction rather than a number copied
+	// into the copy and left to drift from ChallengeTTL.
+	SendVerification func(email, username, verificationURL string, validFor time.Duration) error
 	FrontendBaseURL  string
 	VerifyBaseURL    string
 	Now              func() time.Time
@@ -355,7 +359,7 @@ func (s *EmailChallengeStore) VerificationEmail(c *gin.Context, email, id, usern
 	query.Set("code", code)
 	query.Set("id", id)
 	verificationURL.RawQuery = query.Encode()
-	err = s.sendVerification(email, username, verificationURL.String())
+	err = s.sendVerification(email, username, verificationURL.String(), s.challengeTTL)
 
 	if err != nil && utils.SysLog != nil {
 		utils.SysLog.Errorf("Login Verification Code failed: %v, User: %s, Request ID: %s", err, username, c.Request.Context().Value(utils.RequestIdKey))
@@ -364,14 +368,53 @@ func (s *EmailChallengeStore) VerificationEmail(c *gin.Context, email, id, usern
 	return err
 }
 
-func sendVerificationEmail(email, username, verificationURL string) error {
-	htmlMsg := fmt.Sprintf(
-		`<p>Hello %s,</p><p><a href="%s">Verify login</a></p><p>%s</p>`,
-		username,
-		verificationURL,
-		verificationURL,
-	)
-	return utils.SendEmail("Login Verification Code", email, htmlMsg)
+// Email clients are not browsers: Outlook renders through Word, so the layout
+// is tables with inline styles, flex and grid do nothing, and an external
+// stylesheet is dropped. Images are blocked by default, so the wordmark is
+// text. The raw URL is repeated as selectable text because clients rewrite or
+// strip the button often enough that a link-only email locks people out.
+func sendVerificationEmail(email, username, verificationURL string, validFor time.Duration) error {
+	subject, body := verificationEmail(username, verificationURL, validFor)
+	return utils.SendEmail(subject, email, body)
+}
+
+// verificationEmail builds the subject and body. It is separate from sending so
+// the copy can be tested without SMTP — the Owner's username reaches HTML here,
+// so the escaping is worth pinning down.
+func verificationEmail(username, verificationURL string, validFor time.Duration) (string, string) {
+	minutes := int(validFor.Round(time.Minute) / time.Minute)
+	if minutes < 1 {
+		minutes = 1
+	}
+	safeUsername := html.EscapeString(username)
+	safeURL := html.EscapeString(verificationURL)
+
+	body := fmt.Sprintf(`<table width="100%%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;border-collapse:collapse;font-family:-apple-system,'Segoe UI','Noto Sans TC',sans-serif;">
+<tr><td style="padding:0 0 12px 2px;">
+<span style="font-size:15px;font-weight:500;color:#0f2942;letter-spacing:.02em;">ChainTrace</span>
+<span style="font-size:12px;color:#8a9199;padding-left:8px;">區塊鏈調查平台</span>
+</td></tr>
+<tr><td style="background:#ffffff;border:1px solid #e3e6ea;border-radius:10px;padding:28px 30px;">
+<p style="margin:0 0 14px;font-size:16px;color:#16191d;">%s，你好</p>
+<p style="margin:0 0 22px;font-size:14px;line-height:1.7;color:#454b52;">有人要用這個信箱登入 ChainTrace。是你的話，按下面的按鈕完成登入。</p>
+<table cellpadding="0" cellspacing="0" style="margin:0 0 16px;"><tr><td style="background:#0f2942;border-radius:6px;">
+<a href="%s" style="display:inline-block;padding:13px 30px;font-size:15px;color:#ffffff;text-decoration:none;">確認登入</a>
+</td></tr></table>
+<p style="margin:0 0 22px;font-size:13px;color:#6b7280;">這個連結 <strong style="color:#16191d;font-weight:500;">%d 分鐘後失效</strong>，而且只能用一次。</p>
+<div style="border-top:1px solid #eceef1;padding-top:18px;">
+<p style="margin:0 0 8px;font-size:13px;color:#6b7280;">按鈕沒反應？把這段網址貼進瀏覽器：</p>
+<div style="background:#f6f7f9;border:1px solid #e3e6ea;border-radius:5px;padding:10px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:#2c3e50;word-break:break-all;line-height:1.5;">%s</div>
+</div>
+<div style="margin-top:20px;border-left:3px solid #c9a227;padding:2px 0 2px 12px;">
+<p style="margin:0;font-size:13px;line-height:1.7;color:#454b52;">不是你本人？<strong style="color:#16191d;font-weight:500;">直接忽略這封信就好。</strong>沒有點連結，登入就不會成立，你的帳號也不會有任何變動。</p>
+</div>
+</td></tr>
+<tr><td style="padding:16px 2px 0;font-size:12px;line-height:1.6;color:#8a9199;">
+系統自動寄出，請勿回覆。<br>你會收到這封信，是因為有人用這個信箱嘗試登入 ChainTrace。
+</td></tr>
+</table>`, safeUsername, safeURL, minutes, safeURL)
+
+	return fmt.Sprintf("ChainTrace 登入確認（%d 分鐘內有效）", minutes), body
 }
 
 func CurrentUser(c *gin.Context) {

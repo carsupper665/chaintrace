@@ -97,7 +97,7 @@ func newAuthHTTPTestWithOptions(t *testing.T, options controller.AuthOptions) *a
 
 	gin.SetMode(gin.TestMode)
 	test := &authHTTPTest{t: t, engine: gin.New(), owner: owner}
-	options.SendVerification = func(_ string, _ string, verificationURL string) error {
+	options.SendVerification = func(_ string, _ string, verificationURL string, _ time.Duration) error {
 		test.verificationURL = verificationURL
 		return nil
 	}

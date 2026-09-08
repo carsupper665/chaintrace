@@ -15,7 +15,7 @@ var (
 	AllowedOrigins []string
 	TrustedProxies []string
 	Environment    string
-	SystemName     = "chainTrack"
+	SystemName     = "ChainTrace"
 )
 
 var EmailLoginAuthServerList = []string{
