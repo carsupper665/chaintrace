@@ -156,5 +156,7 @@ func apiRouterWithOptions(
 		auth.POST("/login", lc.ChallengeLogin)
 		auth.GET("/verify", lc.UrlVerifyLogin)
 		auth.GET("/challenge", lc.ExchangeToken)
+		auth.GET("/fgf/login", controller.FGFLogin)
+		auth.POST("/fgf/callback", controller.FGFCallback)
 	}
 }

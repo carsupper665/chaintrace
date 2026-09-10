@@ -192,7 +192,6 @@ export function WorkspacePanel({
           <span className="avatar">{initials}</span>
           <span className="owner-copy">
             <strong>{ownerName}</strong>
-            <small>@{owner.username}</small>
           </span>
           <form action="/api/auth/logout" method="post">
             <button className="logout-button" type="submit">

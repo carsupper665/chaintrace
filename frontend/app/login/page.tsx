@@ -29,6 +29,12 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           <strong>01</strong>
         </div>
         <LoginForm callbackFailed={error === "callback"} />
+        <div className="fgf-login-option">
+          <a href="/api/auth/fgf" className="fgf-login-logo" aria-label="使用 FGF 登入" aria-describedby="fgf-login-hint">
+            <img src="/fgf-logo.svg" alt="FGF" width="36" height="36" />
+          </a>
+          <small id="fgf-login-hint">使用 FGF 帳號登入</small>
+        </div>
       </section>
     </main>
   );

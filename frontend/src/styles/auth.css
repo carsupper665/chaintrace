@@ -231,3 +231,40 @@
 
   .login-panel-heading { margin-bottom: 32px; }
 }
+
+.fgf-login-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.fgf-login-logo {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  opacity: 0.85;
+  transition: opacity 150ms ease;
+}
+
+.fgf-login-logo:hover,
+.fgf-login-logo:focus-visible {
+  opacity: 1;
+}
+
+.fgf-login-logo:focus-visible {
+  outline: 2px solid #b8b0e8;
+  outline-offset: 3px;
+}
+
+.fgf-login-option small {
+  color: #a0a6b0;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
