@@ -7,7 +7,9 @@ export async function GET(request: Request) {
     });
     const location = response.headers.get("location");
     const cookie = response.headers.get("set-cookie");
-    if (response.status !== 302 || !location || !cookie) throw new Error("FGF unavailable");
+    if (response.status !== 302 || !location || !cookie) {
+      throw new Error(`FGF unavailable: API answered ${response.status}, location=${location ?? "none"}, cookie=${cookie ? "yes" : "none"}`);
+    }
     return new Response(null, { status: 302, headers: {
       Location: location, "Set-Cookie": cookie, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
     } });

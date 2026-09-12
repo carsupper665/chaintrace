@@ -13,7 +13,7 @@ export async function GET(request: Request) {
       headers: { "Content-Type": "application/json", Cookie: request.headers.get("cookie") || "" },
       body: JSON.stringify({ code: url.searchParams.get("code"), state: url.searchParams.get("state") }),
     });
-    if (!response.ok) throw new Error("FGF failed");
+    if (!response.ok) throw new Error(`FGF failed: API answered ${response.status} ${await response.text()}`);
     const payload = await response.json() as { token?: unknown };
     if (typeof payload.token !== "string" || !payload.token) throw new Error("Missing credential");
     headers.append("Set-Cookie", credentialCookie(payload.token));
