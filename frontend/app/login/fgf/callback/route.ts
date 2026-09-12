@@ -18,6 +18,8 @@ export async function GET(request: Request) {
     if (typeof payload.token !== "string" || !payload.token) throw new Error("Missing credential");
     headers.append("Set-Cookie", credentialCookie(payload.token));
     headers.set("Location", new URL("/", url).toString());
-  } catch { /* Redirect to a retryable login page. */ }
+  } catch (error) {
+    console.error("FGF callback:", error instanceof Error ? error.message : error);
+  }
   return new Response(null, { status: 303, headers });
 }

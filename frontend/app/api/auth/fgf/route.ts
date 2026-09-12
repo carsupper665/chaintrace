@@ -11,7 +11,9 @@ export async function GET(request: Request) {
     return new Response(null, { status: 302, headers: {
       Location: location, "Set-Cookie": cookie, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
     } });
-  } catch {
+  } catch (error) {
+    // Visible through `wrangler tail` / the dev console; the browser only sees the retryable login page.
+    console.error("FGF login begin:", error instanceof Error ? error.message : error);
     return Response.redirect(new URL("/login?error=callback", request.url), 303);
   }
 }
