@@ -90,6 +90,7 @@ export type CurrentAnalysisResult = {
     nodeAssessments: NodeAssessment[];
     source: string;
     learnedScore: number | null;
+    learnedScorePercentile: number | null;
     learnedScoreSource: string;
     updatedAt: string;
   };

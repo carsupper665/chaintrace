@@ -1010,6 +1010,17 @@ button {
   white-space: nowrap;
 }
 
+/* Unvalidated (ADR-0015: no known-bad/known-benign measurement yet), so this
+   is deliberately plain text — no risk-tone color, unlike the rules score. */
+.mini-stat-secondary {
+  margin-top: 3px;
+  color: #65736b;
+  font-size: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .total-flow-stat .mini-stat-value {
   flex-wrap: nowrap;
   gap: 4px;
@@ -1249,6 +1260,37 @@ button {
   margin: 2px 0 0;
   color: #aeb9b3;
   font-size: 10px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-message.streaming {
+  border-color: rgba(117, 242, 176, 0.28);
+}
+
+.chat-waiting {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.chat-thinking {
+  margin-bottom: 6px;
+}
+
+.chat-thinking summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.chat-thinking p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 9px;
   line-height: 1.6;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -3520,6 +3562,7 @@ button {
 .theme-light .address-block small,
 .theme-light .mini-stat small,
 .theme-light .mini-stat span,
+.theme-light .mini-stat-secondary,
 .theme-light .agent-intro p,
 .theme-light .agent-step small,
 .theme-light .card-heading small,

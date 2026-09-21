@@ -27,12 +27,13 @@ func (s fixtureLearnedScorer) Score(context.Context, analysis.LearnedScoreInput)
 }
 
 type currentResultAssessment struct {
-	Score              *int     `json:"score"`
-	Level              string   `json:"level"`
-	Reasons            []string `json:"reasons"`
-	Source             string   `json:"source"`
-	LearnedScore       *float64 `json:"learnedScore"`
-	LearnedScoreSource string   `json:"learnedScoreSource"`
+	Score                  *int     `json:"score"`
+	Level                  string   `json:"level"`
+	Reasons                []string `json:"reasons"`
+	Source                 string   `json:"source"`
+	LearnedScore           *float64 `json:"learnedScore"`
+	LearnedScorePercentile *float64 `json:"learnedScorePercentile"`
+	LearnedScoreSource     string   `json:"learnedScoreSource"`
 }
 
 func fetchCurrentAssessment(t *testing.T, test *authHTTPTest, token, investigationID string) currentResultAssessment {
@@ -154,8 +155,13 @@ func TestLearnedScoreFetchFailureLeavesRunCompletedRulesOnly(t *testing.T) {
 
 // TestSuccessfulLearnedScoreIsRecordedBesideRulesScore is acceptance #1 and
 // #2 together: both scores land in the dataset, and the rules-visible score
-// is byte-identical to a run with no scorer configured at all.
+// is byte-identical to a run with no scorer configured at all. The learned
+// score is always stored regardless of RISK_SCORE_PUBLISH_MODE (see
+// TestLearnedScoreIsHiddenFromTheAPIUnlessPublishModeIsHybrid for the
+// API-visibility half of this) — this test opts into "hybrid" so it can
+// assert on the API response too, in the same request.
 func TestSuccessfulLearnedScoreIsRecordedBesideRulesScore(t *testing.T) {
+	t.Setenv("RISK_SCORE_PUBLISH_MODE", "hybrid")
 	test := newAuthHTTPTest(t)
 	migrateAnalysisTestTables(t)
 	cutoff := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
@@ -164,7 +170,7 @@ func TestSuccessfulLearnedScoreIsRecordedBesideRulesScore(t *testing.T) {
 		Provider:  successfulProvider(cutoff),
 		Evaluator: successfulEvaluator(),
 		LearnedScorer: fixtureLearnedScorer{
-			result: analysis.LearnedScoreResult{Score: -0.42, Source: "manifest-hash-abc123"},
+			result: analysis.LearnedScoreResult{Score: -0.42, Percentile: 92.5, Source: "manifest-hash-abc123"},
 		},
 	})
 	token := ownerToken(t, test.owner.ID)
@@ -182,6 +188,9 @@ func TestSuccessfulLearnedScoreIsRecordedBesideRulesScore(t *testing.T) {
 	if assessment.LearnedScore == nil || *assessment.LearnedScore != -0.42 || assessment.LearnedScoreSource != "manifest-hash-abc123" {
 		t.Errorf("learnedScore = %v/%q, want -0.42/manifest-hash-abc123", assessment.LearnedScore, assessment.LearnedScoreSource)
 	}
+	if assessment.LearnedScorePercentile == nil || *assessment.LearnedScorePercentile != 92.5 {
+		t.Errorf("learnedScorePercentile = %v, want 92.5", assessment.LearnedScorePercentile)
+	}
 
 	var stored store.Assessment
 	if err := model.DB.First(&stored, "dataset_id = ?", *completed.ResultID).Error; err != nil {
@@ -189,6 +198,64 @@ func TestSuccessfulLearnedScoreIsRecordedBesideRulesScore(t *testing.T) {
 	}
 	if stored.LearnedScore == nil || *stored.LearnedScore != -0.42 || stored.LearnedScoreSource != "manifest-hash-abc123" {
 		t.Errorf("stored assessment = %#v, want LearnedScore -0.42 / manifest-hash-abc123", stored)
+	}
+	if stored.LearnedScorePercentile == nil || *stored.LearnedScorePercentile != 92.5 {
+		t.Errorf("stored LearnedScorePercentile = %v, want 92.5", stored.LearnedScorePercentile)
+	}
+}
+
+// TestLearnedScoreIsHiddenFromTheAPIUnlessPublishModeIsHybrid is the other
+// half of the acceptance criteria above: with RISK_SCORE_PUBLISH_MODE unset
+// (the production default, and ADR-0015's current stance — not yet measured
+// against known-bad/known-benign addresses), a successfully computed learned
+// score is still stored, but LoadCurrentResult must not hand it to the API.
+// An explicit "rules" value must behave identically to leaving it unset.
+func TestLearnedScoreIsHiddenFromTheAPIUnlessPublishModeIsHybrid(t *testing.T) {
+	for _, mode := range []string{"", "rules"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			if mode != "" {
+				t.Setenv("RISK_SCORE_PUBLISH_MODE", mode)
+			}
+			test := newAuthHTTPTest(t)
+			migrateAnalysisTestTables(t)
+			cutoff := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
+			test.engine = gin.New()
+			apiRouter.ApiRouterWithAnalysisOptions(test.engine, analysis.Options{
+				Provider:  successfulProvider(cutoff),
+				Evaluator: successfulEvaluator(),
+				LearnedScorer: fixtureLearnedScorer{
+					result: analysis.LearnedScoreResult{Score: -0.42, Percentile: 92.5, Source: "manifest-hash-abc123"},
+				},
+			})
+			token := ownerToken(t, test.owner.ID)
+			investigationID := createTargetedInvestigation(t, test, token)
+
+			completed := startAndCompleteRun(t, test, token, investigationID)
+			if completed.Status != "completed" || completed.ResultID == nil {
+				t.Fatalf("run with a successful scorer = %#v", completed)
+			}
+
+			assessment := fetchCurrentAssessment(t, test, token, investigationID)
+			if assessment.LearnedScore != nil || assessment.LearnedScorePercentile != nil || assessment.LearnedScoreSource != "" {
+				t.Errorf("learnedScore = %v/%v/%q, want nil/nil/\"\" when publish mode is %q",
+					assessment.LearnedScore, assessment.LearnedScorePercentile, assessment.LearnedScoreSource, mode)
+			}
+			// The rules score is unaffected either way.
+			if assessment.Score == nil || *assessment.Score != 0 || assessment.Level != "low" {
+				t.Errorf("rules assessment changed by publish mode: %#v", assessment)
+			}
+
+			var stored store.Assessment
+			if err := model.DB.First(&stored, "dataset_id = ?", *completed.ResultID).Error; err != nil {
+				t.Fatalf("load stored assessment: %v", err)
+			}
+			if stored.LearnedScore == nil || *stored.LearnedScore != -0.42 || stored.LearnedScoreSource != "manifest-hash-abc123" {
+				t.Errorf("stored assessment = %#v, want the learned score still persisted regardless of publish mode", stored)
+			}
+			if stored.LearnedScorePercentile == nil || *stored.LearnedScorePercentile != 92.5 {
+				t.Errorf("stored LearnedScorePercentile = %v, want 92.5 persisted regardless of publish mode", stored.LearnedScorePercentile)
+			}
+		})
 	}
 }
 

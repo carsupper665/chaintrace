@@ -51,6 +51,7 @@ type scoreRequestWire struct {
 
 type scoreResponseWire struct {
 	Score        float64 `json:"score"`
+	Percentile   float64 `json:"percentile"`
 	ModelVersion string  `json:"model_version"`
 }
 
@@ -136,7 +137,9 @@ func decodeScoreResponse(status int, raw []byte) (analysis.LearnedScoreResult, e
 		if reply.ModelVersion == "" {
 			return analysis.LearnedScoreResult{}, errors.New("scorer reply carries no model version")
 		}
-		return analysis.LearnedScoreResult{Score: reply.Score, Source: reply.ModelVersion}, nil
+		return analysis.LearnedScoreResult{
+			Score: reply.Score, Percentile: reply.Percentile, Source: reply.ModelVersion,
+		}, nil
 	}
 	var failure scoreErrorWire
 	if json.Unmarshal(raw, &failure) != nil || failure.Code == "" {

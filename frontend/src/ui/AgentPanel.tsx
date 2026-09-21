@@ -198,6 +198,23 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
                     : "/ 100"}
               </span>
             </div>
+            {assessment?.learnedScorePercentile != null && (
+              <div
+                className="mini-stat-secondary"
+                title={
+                  assessment.learnedScoreSource
+                    ? `模型來源：${assessment.learnedScoreSource}`
+                    : undefined
+                }
+              >
+                行為異常度：
+                <span
+                  className={`risk-text risk-${getRiskTone(assessment.learnedScorePercentile)}`}
+                >
+                  贏過 {Math.round(assessment.learnedScorePercentile)}% 的一般地址
+                </span>
+              </div>
+            )}
           </div>
           <div className="mini-stat">
             <small>關聯節點</small>
@@ -283,20 +300,18 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
             ))}
           </div>
 
-          {(ui.hasMoreConversation || ui.chatMessages.length > 0) && (
+          {(ui.hasMoreConversation ||
+            ui.chatMessages.length > 0 ||
+            ui.streamingReply) && (
             <div className="chat-thread" aria-live="polite">
               {ui.chatMessages.map((message) => (
                 <div
                   className={`chat-message ${message.role}`}
                   key={message.id}
                 >
-                  <span>
-                    {message.role === "user"
-                      ? "你"
-                      : message.role === "agent"
-                        ? "AI"
-                        : "!"}
-                  </span>
+                  {message.role !== "user" && (
+                    <span>{message.role === "agent" ? "AI" : "!"}</span>
+                  )}
                   <p>{conversationContent(message)}</p>
                 </div>
               ))}
@@ -312,6 +327,32 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
                   {ui.isConversationLoading ? "載入中…" : "載入更多訊息"}
                 </button>
               )}
+              {ui.streamingReply && (
+                <>
+                  {/* Shown the moment the turn starts, not once the Agent
+                      finishes — waiting for the whole reply just to see your
+                      own message echoed back read as broken. */}
+                  <div className="chat-message user">
+                    <p>{ui.streamingReply.userMessage}</p>
+                  </div>
+                  <div className="chat-message agent streaming">
+                    <span>AI</span>
+                    <div>
+                      {ui.streamingReply.thinking && (
+                        <details className="chat-thinking">
+                          <summary>思考過程</summary>
+                          <p>{ui.streamingReply.thinking}</p>
+                        </details>
+                      )}
+                      <p>
+                        {ui.streamingReply.text || (
+                          <span className="chat-waiting">等待回覆…</span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -325,13 +366,6 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
             <div className="agent-connecting" role="status">
               <i />
               正在載入已保存的對話…
-            </div>
-          )}
-
-          {ui.isRunning && (
-            <div className="agent-connecting" role="status">
-              <i />
-              正在保存 command 與 system outcome…
             </div>
           )}
         </section>

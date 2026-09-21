@@ -36,11 +36,13 @@ func TestCurrentResultMatchesPublishedContract(t *testing.T) {
 func sampleCurrentResult() analysis.CurrentResult {
 	score := 0
 	learnedScore := 0.0
+	learnedScorePercentile := 0.0
 	result := analysis.CurrentResult{}
 	result.Assessment.Score = &score
 	result.Assessment.Reasons = []string{""}
 	result.Assessment.NodeAssessments = []analysis.NodeAssessment{{Reasons: []string{""}}}
 	result.Assessment.LearnedScore = &learnedScore
+	result.Assessment.LearnedScorePercentile = &learnedScorePercentile
 	return result
 }
 

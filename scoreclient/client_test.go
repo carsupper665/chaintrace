@@ -40,7 +40,7 @@ func TestScoreRoundTrip(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(scoreResponseWire{Score: -0.42, ModelVersion: "abc123"})
+		_ = json.NewEncoder(w).Encode(scoreResponseWire{Score: -0.42, Percentile: 92.5, ModelVersion: "abc123"})
 	}))
 	defer server.Close()
 
@@ -52,8 +52,8 @@ func TestScoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Score() error = %v", err)
 	}
-	if result.Score != -0.42 || result.Source != "abc123" {
-		t.Errorf("result = %+v, want {Score:-0.42 Source:abc123}", result)
+	if result.Score != -0.42 || result.Percentile != 92.5 || result.Source != "abc123" {
+		t.Errorf("result = %+v, want {Score:-0.42 Percentile:92.5 Source:abc123}", result)
 	}
 	if gotKey != "secret" {
 		t.Errorf("X-Agent-Key = %q, want secret", gotKey)

@@ -77,6 +77,11 @@ type Assessment struct {
 	// float, not a 0-100 rules-style score, and nil whenever no scorer was
 	// configured or the attempt failed — that is not an error for the run.
 	LearnedScore *float64
+	// LearnedScorePercentile is LearnedScore converted to "beats N% of the
+	// baseline population" (0-100) by the sidecar (docs/learned-risk-scoring-
+	// plan.md Phase 4) — unlike LearnedScore, meant to be read directly. Nil
+	// exactly when LearnedScore is nil.
+	LearnedScorePercentile *float64
 	// LearnedScoreSource echoes the model manifest's trainingDataHash so a
 	// stored score can be traced to the artifact that produced it. "" when
 	// LearnedScore is nil.

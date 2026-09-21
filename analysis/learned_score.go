@@ -4,6 +4,7 @@ import (
 	"chaintrace/utils"
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -23,6 +24,23 @@ const (
 	learnedScoreTimeout = 3 * time.Minute
 )
 
+// PublishesLearnedScore reports whether RISK_SCORE_PUBLISH_MODE says the
+// already-computed learned score should be exposed through the API. It is
+// always computed and stored (see publish()) regardless of this setting —
+// this only gates whether LoadCurrentResult hands it to the frontend. The
+// rules score and its reasons never depend on this: ADR-0015 says the learned
+// score isn't measured against known-bad/known-benign addresses yet, so it is
+// shown as its own separate value, never blended into the published headline
+// Risk Score.
+func PublishesLearnedScore() bool {
+	switch strings.ToLower(strings.TrimSpace(utils.GetEnvString("RISK_SCORE_PUBLISH_MODE", "rules"))) {
+	case "hybrid":
+		return true
+	default:
+		return false
+	}
+}
+
 // LearnedScoreInput is the Target's own transfer history, independent of any
 // graph traversal, plus the window it was collected under.
 type LearnedScoreInput struct {
@@ -37,8 +55,13 @@ type LearnedScoreInput struct {
 // identifies which trained artifact produced it (the model manifest's
 // trainingDataHash), for later comparison work (Phase 4).
 type LearnedScoreResult struct {
-	Score  float64
-	Source string
+	Score float64
+	// Percentile is Score converted to "beats N% of the baseline population"
+	// (0-100), computed by the sidecar from its own baseline-percentile table
+	// (docs/learned-risk-scoring-plan.md Phase 4). Unlike Score, it's meant to
+	// be read directly.
+	Percentile float64
+	Source     string
 }
 
 // LearnedScorer is a second, independent risk measurement alongside

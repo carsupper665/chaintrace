@@ -547,14 +547,15 @@ type MetricsResult struct {
 }
 
 type AssessmentResult struct {
-	Score              *int             `json:"score"`
-	Level              string           `json:"level"`
-	Reasons            []string         `json:"reasons"`
-	NodeAssessments    []NodeAssessment `json:"nodeAssessments"`
-	Source             string           `json:"source"`
-	LearnedScore       *float64         `json:"learnedScore"`
-	LearnedScoreSource string           `json:"learnedScoreSource"`
-	UpdatedAt          time.Time        `json:"updatedAt"`
+	Score                  *int             `json:"score"`
+	Level                  string           `json:"level"`
+	Reasons                []string         `json:"reasons"`
+	NodeAssessments        []NodeAssessment `json:"nodeAssessments"`
+	Source                 string           `json:"source"`
+	LearnedScore           *float64         `json:"learnedScore"`
+	LearnedScorePercentile *float64         `json:"learnedScorePercentile"`
+	LearnedScoreSource     string           `json:"learnedScoreSource"`
+	UpdatedAt              time.Time        `json:"updatedAt"`
 }
 
 type CurrentResult struct {
@@ -620,18 +621,24 @@ func LoadCurrentResult(ownerID uint, investigationID string) (CurrentResult, err
 				},
 			},
 			Assessment: AssessmentResult{
-				Score:              assessment.Score,
-				Level:              assessment.Level,
-				Reasons:            reasons,
-				NodeAssessments:    nodes,
-				Source:             assessment.Source,
-				LearnedScore:       assessment.LearnedScore,
-				LearnedScoreSource: assessment.LearnedScoreSource,
-				UpdatedAt:          assessment.UpdatedAt,
+				Score:                  assessment.Score,
+				Level:                  assessment.Level,
+				Reasons:                reasons,
+				NodeAssessments:        nodes,
+				Source:                 assessment.Source,
+				LearnedScore:           assessment.LearnedScore,
+				LearnedScorePercentile: assessment.LearnedScorePercentile,
+				LearnedScoreSource:     assessment.LearnedScoreSource,
+				UpdatedAt:              assessment.UpdatedAt,
 			},
 		}
 		return nil
 	})
+	if err == nil && !PublishesLearnedScore() {
+		current.Assessment.LearnedScore = nil
+		current.Assessment.LearnedScorePercentile = nil
+		current.Assessment.LearnedScoreSource = ""
+	}
 	return current, err
 }
 
@@ -735,7 +742,9 @@ func publish(investigation store.Investigation, runID string, request Collection
 		}
 		if learned != nil {
 			score := learned.Score
+			percentile := learned.Percentile
 			assessment.LearnedScore = &score
+			assessment.LearnedScorePercentile = &percentile
 			assessment.LearnedScoreSource = learned.Source
 		}
 		if err := tx.Create(&assessment).Error; err != nil {

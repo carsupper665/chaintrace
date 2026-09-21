@@ -124,7 +124,29 @@ def test_score_route_end_to_end(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert math.isfinite(body["score"])
+    assert 0.0 <= body["percentile"] <= 100.0
+    assert body["percentile"] == service.percentile_of(body["score"])
     assert body["model_version"] == service.MODEL_VERSION
+
+
+# ---- percentile_of()：把原始分數換算成贏過基準母體幾 %（Phase 4） ----
+
+
+def test_percentile_of_is_exact_at_stored_cutoffs():
+    for point, cutoff in zip(service._PERCENTILE_POINTS, service._PERCENTILE_CUTOFFS):
+        assert service.percentile_of(cutoff) == pytest.approx(point)
+
+
+def test_percentile_of_clamps_outside_the_measured_range():
+    lowest, highest = service._PERCENTILE_POINTS[0], service._PERCENTILE_POINTS[-1]
+    assert service.percentile_of(-999.0) == pytest.approx(lowest)
+    assert service.percentile_of(999.0) == pytest.approx(highest)
+
+
+def test_percentile_of_is_monotonic():
+    scores = [c - 0.01 for c in service._PERCENTILE_CUTOFFS] + list(service._PERCENTILE_CUTOFFS)
+    percentiles = [service.percentile_of(s) for s in sorted(scores)]
+    assert percentiles == sorted(percentiles)
 
 
 def test_missing_key_is_rejected(monkeypatch):
