@@ -63,6 +63,15 @@ export function useChainTrace() {
   // selection means the Agent's default provider.
   const [agentModels, setAgentModels] = useState<AgentModel[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
+  // The turn currently in flight, if any: the Owner's own message (shown right
+  // away instead of waiting for the whole turn to settle) plus the Agent's
+  // reply streaming in. Thinking text is never persisted — it only ever lives
+  // here, cleared the moment the turn settles.
+  const [streamingReply, setStreamingReply] = useState<{
+    userMessage: string;
+    text: string;
+    thinking: string;
+  } | null>(null);
   const [hasMoreConversation, setHasMoreConversation] = useState(false);
   const [isConversationLoading, setIsConversationLoading] = useState(false);
   const [conversationReloadToken, setConversationReloadToken] = useState(0);
@@ -330,11 +339,16 @@ export function useChainTrace() {
   useEffect(() => () => conversationBrowser.clear(), [conversationBrowser]);
 
   // Loaded once; a failure just leaves the picker hidden rather than blocking
-  // the workspace, since the default model still works without it.
+  // the workspace, since the default model still works without it. The first
+  // model becomes the default pick so a turn never silently falls through to
+  // the sidecar's own default provider; a manual pick is never clobbered.
   useEffect(() => {
     const controller = new AbortController();
     getAgentModels(fetch, controller.signal)
-      .then(setAgentModels)
+      .then((models) => {
+        setAgentModels(models);
+        setSelectedModel((current) => current || models[0]?.id || "");
+      })
       .catch(() => setAgentModels([]));
     return () => controller.abort();
   }, []);
@@ -1009,11 +1023,21 @@ export function useChainTrace() {
     setQuery("");
     setConversationError("");
     setIsRunning(true);
+    setStreamingReply({ userMessage: command, text: "", thinking: "" });
     try {
       const investigationId =
         active?.id || (await openInvestigationForCommand());
-      await conversationBrowser.submit(
+      await conversationBrowser.submitStream(
         command,
+        (kind, deltaText) => {
+          if (conversationAttempt.current !== attempt) return;
+          setStreamingReply((current) => {
+            const base = current || { userMessage: command, text: "", thinking: "" };
+            return kind === "text"
+              ? { ...base, text: base.text + deltaText }
+              : { ...base, thinking: base.thinking + deltaText };
+          });
+        },
         undefined,
         selectedModel || undefined,
       );
@@ -1033,7 +1057,10 @@ export function useChainTrace() {
           : "訊息結果不明，請重試；重試會沿用相同的 command identity。",
       );
     } finally {
-      if (conversationAttempt.current === attempt) setIsRunning(false);
+      if (conversationAttempt.current === attempt) {
+        setIsRunning(false);
+        setStreamingReply(null);
+      }
     }
   }
 
@@ -1436,6 +1463,7 @@ export function useChainTrace() {
     resizingPanel,
     search,
     selectedNodeId,
+    streamingReply,
     sidebarWidth,
     analysisWidth,
     transactionGraph,

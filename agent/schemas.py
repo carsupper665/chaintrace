@@ -89,6 +89,9 @@ class ChatRequest(BaseModel):
     model: str = ""
     """要用哪個相容模型（llm/config 裡的 id）。空字串走 LLM_PROVIDER 的預設。"""
 
+    stream: bool = False
+    """true 時 /v1/agent/chat/stream 才會用得到；一般的 /v1/agent/chat 忽略它。"""
+
     @property
     def is_continuation(self) -> bool:
         return bool(self.tool_results)

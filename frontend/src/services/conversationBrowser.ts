@@ -3,10 +3,12 @@ import {
   getConversationPage,
   postAgentSummary,
   postConversationMessage,
+  postConversationMessageStream,
 } from "@/src/middle/conversation-client";
 import {
   CONVERSATION_PAGE_SIZE,
   type AgentSummaryOutcome,
+  type ConversationStreamEvent,
   type ConversationSubmitOutcome,
   type ConversationMessage,
 } from "@/src/middle/conversation-contract";
@@ -173,6 +175,67 @@ export function createConversationBrowser(
         request.signal,
         model,
       );
+      await adoptNewMessages(investigationId, request.version, outcome.messages);
+      if (pendingSubmission?.idempotencyKey === commandKey) {
+        pendingSubmission = null;
+      }
+      return outcome;
+    },
+
+    // submit's streaming twin: onDelta fires for every text/thinking chunk as
+    // it arrives, and the returned outcome (and the reconciliation against
+    // any newer pages via adoptNewMessages) is otherwise identical to submit's
+    // — a caller can freely switch between the two.
+    async submitStream(
+      message: string,
+      onDelta: (kind: "text" | "thinking", text: string) => void,
+      idempotencyKey?: string,
+      model?: string,
+    ): Promise<ConversationSubmitOutcome> {
+      const investigationId = state.investigationId;
+      if (!investigationId) {
+        throw new Error("An Investigation conversation must be loaded first");
+      }
+      const commandKey =
+        idempotencyKey ||
+        (pendingSubmission?.investigationId === investigationId &&
+        pendingSubmission.message === message
+          ? pendingSubmission.idempotencyKey
+          : createConversationIdempotencyKey());
+      pendingSubmission = {
+        investigationId,
+        message,
+        idempotencyKey: commandKey,
+      };
+      const request = beginRequest(investigationId);
+      let terminalEvent: ConversationStreamEvent | null = null;
+      await postConversationMessageStream(
+        investigationId,
+        commandKey,
+        message,
+        (event) => {
+          if (event.type === "text_delta") onDelta("text", event.text);
+          else if (event.type === "thinking_delta") onDelta("thinking", event.text);
+          else terminalEvent = event;
+        },
+        fetchImpl,
+        request.signal,
+        model,
+      );
+      if (!terminalEvent) {
+        throw new Error("Agent stream ended without a terminal frame");
+      }
+      // TS mis-narrows a `let` reassigned inside a closure to `never` here;
+      // the null check above already proves this cast safe at runtime, and
+      // the closure only ever assigns a "done" or "error" event to it.
+      const settled = terminalEvent as Extract<
+        ConversationStreamEvent,
+        { type: "done" | "error" }
+      >;
+      const outcome: ConversationSubmitOutcome =
+        settled.type === "done"
+          ? { code: "agent_replied", persisted: true, messages: settled.messages }
+          : { code: "agent_unavailable", persisted: true, messages: settled.messages };
       await adoptNewMessages(investigationId, request.version, outcome.messages);
       if (pendingSubmission?.idempotencyKey === commandKey) {
         pendingSubmission = null;

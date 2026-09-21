@@ -5,9 +5,21 @@
 
 import os
 
-from .base import LLM, BaseLLM
+from .base import LLM, BaseLLM, complete_as_stream
 from .fake import FakeLLM
-from .types import LLMError, Message, Reply, StopReason, ToolCall, ToolSpec, Usage
+from .types import (
+    LLMError,
+    Message,
+    Reply,
+    StopReason,
+    StreamChunk,
+    StreamDone,
+    TextDelta,
+    ThinkingDelta,
+    ToolCall,
+    ToolSpec,
+    Usage,
+)
 
 __all__ = [
     "LLM",
@@ -17,9 +29,14 @@ __all__ = [
     "Message",
     "Reply",
     "StopReason",
+    "StreamChunk",
+    "StreamDone",
+    "TextDelta",
+    "ThinkingDelta",
     "ToolCall",
     "ToolSpec",
     "Usage",
+    "complete_as_stream",
     "from_env",
 ]
 

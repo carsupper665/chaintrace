@@ -18,9 +18,10 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable, Sequence
+from typing import Callable, Iterator, Sequence
 
-from .types import LLMError, Message, Reply, ToolCall, ToolSpec, Usage
+from .base import complete_as_stream
+from .types import LLMError, Message, Reply, StreamChunk, ToolCall, ToolSpec, Usage
 
 DEFAULT_COMMAND = "codex"
 DEFAULT_TIMEOUT_SECONDS = 120.0
@@ -223,6 +224,25 @@ class CodexLLM:
         if pending is None:
             return self._start(system, messages, tools)
         return self._continue(pending, messages)
+
+    def stream(
+        self,
+        *,
+        system: str,
+        messages: Sequence[Message],
+        tools: Sequence[ToolSpec] = (),
+        schema: dict | None = None,
+        max_tokens: int = 4096,
+    ) -> Iterator[StreamChunk]:
+        """Codex 的 stdio 協定不吐增量 token；墊一個一次性 chunk。"""
+        yield from complete_as_stream(
+            self.complete,
+            system=system,
+            messages=messages,
+            tools=tools,
+            schema=schema,
+            max_tokens=max_tokens,
+        )
 
     def _start(
         self, system: str, messages: Sequence[Message], tools: Sequence[ToolSpec]

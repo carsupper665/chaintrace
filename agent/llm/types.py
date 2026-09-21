@@ -80,6 +80,30 @@ class Reply:
     """模型這一手的原始步驟，續跑時要原樣送回。見 Message.provider_steps。"""
 
 
+@dataclass(frozen=True)
+class TextDelta:
+    """串流時新收到的一段正文。"""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class ThinkingDelta:
+    """串流時新收到的一段思考／推理文字。不是每家都有；沒有就不會出現。"""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class StreamDone:
+    """串流結束，reply 是這一輪完整組好的 Reply，跟 complete() 回的一樣。"""
+
+    reply: Reply
+
+
+StreamChunk = TextDelta | ThinkingDelta | StreamDone
+
+
 class LLMError(RuntimeError):
     """供應商呼叫失敗。adapter 把各家的例外都收斂成這一種。"""
 

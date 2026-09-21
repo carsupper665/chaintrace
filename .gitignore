@@ -4,9 +4,17 @@ logs/*
 .vscode/*
 *.exe
 DB.db
+dist/
+dist-windows/
 
 # Python agent
 agent/.venv/
+agent/.venv
+agent/agent.log
+
+# Frontend dev artifacts (symlinked to native fs under WSL drvfs)
+frontend/.wrangler
+frontend/frontend.log
 __pycache__/
 *.pyc
 .pytest_cache/

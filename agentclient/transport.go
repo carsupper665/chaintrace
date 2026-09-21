@@ -1,6 +1,7 @@
 package agentclient
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -37,6 +38,21 @@ type chatRequest struct {
 	// Model picks one of the sidecar's configured compatible models. Empty
 	// means the sidecar's default provider.
 	Model string `json:"model,omitempty"`
+	// Stream is only set by chatStream, which always posts to
+	// /v1/agent/chat/stream; chat leaves it false and posts to /v1/agent/chat.
+	Stream bool `json:"stream,omitempty"`
+}
+
+// streamEvent is one SSE frame from /v1/agent/chat/stream. Only the fields
+// that frame kind uses are populated; the rest stay zero.
+type streamEvent struct {
+	Type       string     `json:"type"`
+	Text       string     `json:"text"`
+	ToolCalls  []ToolCall `json:"tool_calls"`
+	StopReason string     `json:"stop_reason"`
+	Usage      chatUsage  `json:"usage"`
+	Code       string     `json:"code"`
+	Message    string     `json:"message"`
 }
 
 type modelsResponse struct {
@@ -103,6 +119,86 @@ func (t *transport) chat(ctx context.Context, payload chatRequest) (chatResponse
 		return chatResponse{}, err
 	}
 	return decodeChatResponse(response.StatusCode, raw)
+}
+
+// chatStream is chat's streaming twin: it posts to /v1/agent/chat/stream and
+// calls onChunk for every text/thinking delta as it arrives, instead of
+// buffering the whole body. It still returns the same chatResponse chat does,
+// built from the stream's terminal "done" frame, so callers that only care
+// about the final answer (tool-call continuations, persistence) don't need to
+// change. onChunk's kind is "text" or "thinking".
+func (t *transport) chatStream(
+	ctx context.Context, payload chatRequest, onChunk func(kind, text string) error,
+) (chatResponse, error) {
+	payload.Stream = true
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return chatResponse{}, err
+	}
+	request, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, t.baseURL+"/v1/agent/chat/stream", bytes.NewReader(body),
+	)
+	if err != nil {
+		return chatResponse{}, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	request.Header.Set("X-Agent-Key", t.sharedKey)
+
+	response, err := t.client.Do(request)
+	if err != nil {
+		return chatResponse{}, err
+	}
+	defer response.Body.Close()
+
+	// The sidecar can still reject the request outright (bad key, bad JSON)
+	// before it ever starts streaming; that comes back as an ordinary JSON
+	// error body, not SSE frames.
+	if response.StatusCode != http.StatusOK {
+		raw, err := io.ReadAll(io.LimitReader(response.Body, maximumAgentResponse))
+		if err != nil {
+			return chatResponse{}, err
+		}
+		return decodeChatResponse(response.StatusCode, raw)
+	}
+
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maximumAgentResponse)
+	for scanner.Scan() {
+		line := scanner.Text()
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue // blank line between frames, or anything else non-SSE
+		}
+		var event streamEvent
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			return chatResponse{}, fmt.Errorf("agent returned malformed JSON: %w", err)
+		}
+		switch event.Type {
+		case "text_delta":
+			if err := onChunk("text", event.Text); err != nil {
+				return chatResponse{}, err
+			}
+		case "thinking_delta":
+			if err := onChunk("thinking", event.Text); err != nil {
+				return chatResponse{}, err
+			}
+		case "done":
+			return chatResponse{
+				Text: event.Text, ToolCalls: event.ToolCalls,
+				StopReason: event.StopReason, Usage: event.Usage,
+			}, nil
+		case "error":
+			if event.Code == "session_expired" {
+				return chatResponse{}, errSessionExpired
+			}
+			return chatResponse{}, fmt.Errorf("agent %s: %s", event.Code, event.Message)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return chatResponse{}, err
+	}
+	return chatResponse{}, fmt.Errorf("agent stream ended without a done frame")
 }
 
 // models asks the sidecar which compatible models it can run. Tokens never

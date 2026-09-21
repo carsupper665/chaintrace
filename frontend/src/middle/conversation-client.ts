@@ -5,6 +5,7 @@ import type {
   ConversationErrorResponse,
   ConversationMessage,
   ConversationPage,
+  ConversationStreamEvent,
   ConversationSubmitOutcome,
 } from "./conversation-contract.ts";
 import { expireSession } from "@/src/auth/expire";
@@ -176,6 +177,71 @@ export async function postConversationMessage(
     };
   }
   throw responseError(response, payload);
+}
+
+// postConversationMessage's streaming twin: calls onEvent once per SSE frame
+// as it arrives instead of resolving once with the full outcome. A rejection
+// before any streaming started (agent_unavailable, a bad request) still
+// arrives as a normal buffered JSON body — that case is folded into a single
+// onEvent({type:"error",...}) call so callers only ever need one code path,
+// whether the turn failed before or after the first token.
+export async function postConversationMessageStream(
+  investigationId: string,
+  idempotencyKey: string,
+  message: string,
+  onEvent: (event: ConversationStreamEvent) => void,
+  fetchImpl: Fetch = fetch,
+  signal?: AbortSignal,
+  model?: string,
+): Promise<void> {
+  const response = await fetchImpl(`${conversationPath(investigationId)}/stream`, {
+    method: "POST",
+    headers: {
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ idempotencyKey, message, ...(model ? { model } : {}) }),
+    cache: "no-store",
+    signal,
+  });
+
+  const isStream = response.headers.get("content-type")?.startsWith("text/event-stream");
+  if (!isStream || !response.body) {
+    const payload = await responsePayload(response);
+    const outcome = (payload || {}) as Partial<AgentUnavailableOutcome>;
+    if (
+      response.status === 503 &&
+      outcome.code === "agent_unavailable" &&
+      outcome.persisted === true
+    ) {
+      onEvent({
+        type: "error",
+        code: "agent_unavailable",
+        messages: requireMessages(outcome.messages),
+      });
+      return;
+    }
+    throw responseError(response, payload);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const frame = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+      if (!frame.startsWith("data: ")) continue;
+      const event = JSON.parse(frame.slice("data: ".length)) as ConversationStreamEvent;
+      onEvent(event);
+      if (event.type === "done" || event.type === "error") return;
+    }
+  }
 }
 
 function isAgentModel(value: unknown): value is AgentModel {

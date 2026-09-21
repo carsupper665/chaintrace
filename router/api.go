@@ -149,6 +149,7 @@ func apiRouterWithOptions(
 		protected.GET("/investigations/:id/graph", analysisHandler.GetGraph)
 		protected.GET("/investigations/:id/conversation", conversationHandler.GetConversation)
 		protected.POST("/investigations/:id/conversation", conversationHandler.SubmitConversation)
+		protected.POST("/investigations/:id/conversation/stream", conversationHandler.SubmitConversationStream)
 		protected.POST("/investigations/:id/agent/summary", agentHandler.GenerateSummary)
 		protected.GET("/agent/models", agentHandler.ListModels)
 	}

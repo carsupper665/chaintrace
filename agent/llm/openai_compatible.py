@@ -17,10 +17,21 @@ API 的名字也是查詢 key，`display_name` 是給人看的名字，兩者刻
 
 import json
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
-from .base import BaseLLM, Step
-from .types import LLMError, Message, ToolSpec, Usage
+from .base import BaseLLM, Step, dump_failed_request, parse_arguments, resolve_stop_reason
+from .types import (
+    LLMError,
+    Message,
+    Reply,
+    StreamChunk,
+    StreamDone,
+    TextDelta,
+    ThinkingDelta,
+    ToolCall,
+    ToolSpec,
+    Usage,
+)
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -135,6 +146,100 @@ class OpenAICompatibleLLM(BaseLLM):
     def _send(self, request: dict) -> dict:
         completion = self._connect().chat.completions.create(**request)
         return completion.model_dump()
+
+    # ---- streaming ----
+
+    def stream(
+        self,
+        *,
+        system: str,
+        messages: Sequence[Message],
+        tools: Sequence[ToolSpec] = (),
+        schema: dict | None = None,
+        max_tokens: int = 4096,
+    ) -> Iterator[StreamChunk]:
+        """真的串流：chat.completions.create(stream=True) 回一串 chunk。
+
+        正文在 delta.content；思考文字在 delta.reasoning_content——不是官方
+        欄位，是 vLLM/NIM 系相容端點的慣例，沒有就不會出現，前端的思考區塊
+        就一直是空的，不是 bug。tool_calls 用 index 分片送，id/name/arguments
+        各自可能拆好幾個 chunk，要收滿才能解析成 ToolCall。
+        """
+        request = self.build_request(
+            system=system, messages=messages, tools=tools, schema=schema, max_tokens=max_tokens
+        )
+        request["stream"] = True
+        request["stream_options"] = {"include_usage": True}
+        try:
+            events = self._connect().chat.completions.create(**request)
+        except LLMError:
+            raise
+        except Exception as error:  # noqa: BLE001 - SDK 例外型別不准外洩
+            dump_failed_request(request)
+            raise self.classify_error(error) from error
+
+        text_parts: list[str] = []
+        tool_call_fragments: dict[int, dict[str, str]] = {}
+        finish_reason: str | None = None
+        usage_payload: dict = {}
+
+        try:
+            for chunk in events:
+                payload = chunk.model_dump()
+                if payload.get("error"):
+                    raise LLMError(f"{self.provider} 回覆失敗: {payload['error']}")
+                choice = (payload.get("choices") or [{}])[0]
+                delta = choice.get("delta") or {}
+                if delta.get("content"):
+                    text_parts.append(delta["content"])
+                    yield TextDelta(delta["content"])
+                if delta.get("reasoning_content"):
+                    yield ThinkingDelta(delta["reasoning_content"])
+                for fragment in delta.get("tool_calls") or []:
+                    index = fragment.get("index", 0)
+                    slot = tool_call_fragments.setdefault(
+                        index, {"id": "", "name": "", "arguments": ""}
+                    )
+                    if fragment.get("id"):
+                        slot["id"] = fragment["id"]
+                    function = fragment.get("function") or {}
+                    if function.get("name"):
+                        slot["name"] += function["name"]
+                    if function.get("arguments"):
+                        slot["arguments"] += function["arguments"]
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+                if payload.get("usage"):
+                    usage_payload = payload["usage"]
+        except LLMError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            raise self.classify_error(error) from error
+
+        tool_calls = tuple(
+            ToolCall(
+                id=fragment["id"],
+                name=fragment["name"],
+                arguments=parse_arguments(fragment["arguments"]),
+            )
+            for _, fragment in sorted(tool_call_fragments.items())
+        )
+        details = usage_payload.get("completion_tokens_details") or {}
+        reply = Reply(
+            text="".join(text_parts),
+            tool_calls=tool_calls,
+            stop_reason=resolve_stop_reason(
+                tool_calls=tool_calls,
+                truncated=finish_reason == "length",
+                refused=finish_reason == "content_filter",
+            ),
+            usage=Usage(
+                input_tokens=usage_payload.get("prompt_tokens") or 0,
+                output_tokens=usage_payload.get("completion_tokens") or 0,
+                thought_tokens=details.get("reasoning_tokens") or 0,
+            ),
+        )
+        yield StreamDone(reply)
 
     # ---- reply ----
 

@@ -1,5 +1,7 @@
 """HTTP 層測試。用 FakeLLM，不碰網路、不需要金鑰。"""
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -217,3 +219,81 @@ def test_chat_without_model_uses_the_default(monkeypatch):
     monkeypatch.setattr("app.model_factory", lambda model_id: pytest.fail("不該建"))
     assert client.post("/v1/agent/chat", json=first_turn(), headers=HEADERS).json()["text"] == "預設"
     assert len(default_llm.calls) == 1
+
+
+# ---- /v1/agent/chat/stream ----
+
+
+def parse_sse(text: str) -> list[dict]:
+    frames = [block for block in text.split("\n\n") if block.strip()]
+    return [json.loads(block.removeprefix("data: ")) for block in frames]
+
+
+def test_stream_endpoint_needs_key(monkeypatch):
+    client, _, _ = build([Reply(text="hi")], monkeypatch)
+    assert client.post("/v1/agent/chat/stream", json=first_turn()).status_code == 401
+    response = client.post(
+        "/v1/agent/chat/stream", json=first_turn(), headers={"X-Agent-Key": "nope"}
+    )
+    assert response.status_code == 401
+    assert response.json()["code"] == "unauthorized"
+
+
+def test_stream_plain_turn_emits_a_text_delta_then_done(monkeypatch):
+    client, llm, _ = build([Reply(text="沒有異常", usage=Usage(10, 5))], monkeypatch)
+    response = client.post("/v1/agent/chat/stream", json=first_turn(), headers=HEADERS)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = parse_sse(response.text)
+    assert events == [
+        {"type": "text_delta", "text": "沒有異常"},
+        {
+            "type": "done",
+            "text": "沒有異常",
+            "tool_calls": [],
+            "stop_reason": "stop",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    ]
+    assert "source_exhausted" in llm.calls[0]["system"]
+
+
+def test_stream_tool_call_settles_the_session_like_the_non_streaming_route(monkeypatch):
+    client, _, store = build([calling_reply()], monkeypatch)
+    response = client.post("/v1/agent/chat/stream", json=first_turn(), headers=HEADERS)
+    events = parse_sse(response.text)
+    assert events[-1]["stop_reason"] == "tool_calls"
+    session = store.get("inv1", "ds1")
+    assert session is not None
+    # 開場的 user 訊息 + 模型那一手記下的 assistant tool_calls，等 Go 回填 tool_results。
+    assert [m.role for m in session.pending] == ["user", "assistant"]
+
+
+def test_stream_llm_failure_becomes_a_terminal_error_frame(monkeypatch):
+    client, _, _ = build([], monkeypatch)  # FakeLLM 沒有預設回覆 -> LLMError
+    response = client.post("/v1/agent/chat/stream", json=first_turn(), headers=HEADERS)
+    assert response.status_code == 200  # headers 已經送出去，錯誤只能用 frame 表達
+    events = parse_sse(response.text)
+    assert events == [{"type": "error", "code": "llm_error", "message": events[0]["message"]}]
+
+
+def test_stream_continuation_without_session_becomes_a_session_expired_frame(monkeypatch):
+    client, _, _ = build([], monkeypatch)
+    response = client.post(
+        "/v1/agent/chat/stream", json=continuation(session_id="gone"), headers=HEADERS
+    )
+    assert response.status_code == 200
+    events = parse_sse(response.text)
+    assert events == [{"type": "error", "code": "session_expired", "message": events[0]["message"]}]
+
+
+def test_stream_with_model_uses_the_factory(monkeypatch):
+    client, default_llm, _ = build([], monkeypatch)
+    picked = FakeLLM([Reply(text="來自選的模型")])
+    monkeypatch.setattr("app.model_factory", lambda model_id: picked)
+    response = client.post(
+        "/v1/agent/chat/stream", json=first_turn(model="wire"), headers=HEADERS
+    )
+    events = parse_sse(response.text)
+    assert events[0] == {"type": "text_delta", "text": "來自選的模型"}
+    assert default_llm.calls == []

@@ -8,19 +8,21 @@
 但它仍然不碰資料庫、不驗身分，分數也不取代 Go 那條決定性的 Risk Score。
 """
 
+import json
 import os
 import pathlib
 import sys
+from typing import Iterator
 
-from fastapi import FastAPI, Header
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Header, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from llm import LLMError, from_env
+from llm import LLMError, StreamDone, TextDelta, ThinkingDelta, from_env
 from llm.openai_compatible import list_models, model_factory
 from prompt import verify_prompts_present
 from schemas import ChatRequest, ChatResponse
 from session import SessionStore
-from turn import InvalidTurn, SessionExpired, run_turn
+from turn import InvalidTurn, SessionExpired, run_turn, run_turn_stream
 
 try:
     from scoring.service import router as scoring_router
@@ -127,6 +129,56 @@ def create_app(*, llm=None, store: SessionStore | None = None) -> FastAPI:
                 status_code=502, content={"code": "llm_error", "message": str(error)}
             )
         return JSONResponse(status_code=200, content=ChatResponse.from_reply(reply).model_dump())
+
+    def _sse_event(payload: dict) -> str:
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def _stream_events(llm, payload: ChatRequest) -> Iterator[str]:
+        # 錯誤在這裡才第一次可能發生——auth 跟 model_factory 都已經在
+        # chat_stream 裡過關了，headers 這時已經送出去，只能用一個終止
+        # 的 error frame 收尾，不能再改 HTTP status。
+        try:
+            for chunk in run_turn_stream(
+                store=app.state.store, llm=llm, request=payload, max_tokens=app.state.max_tokens
+            ):
+                if isinstance(chunk, TextDelta):
+                    yield _sse_event({"type": "text_delta", "text": chunk.text})
+                elif isinstance(chunk, ThinkingDelta):
+                    yield _sse_event({"type": "thinking_delta", "text": chunk.text})
+                elif isinstance(chunk, StreamDone):
+                    response = ChatResponse.from_reply(chunk.reply)
+                    yield _sse_event({"type": "done", **response.model_dump()})
+        except SessionExpired:
+            yield _sse_event(
+                {"type": "error", "code": "session_expired", "message": "Session not held; resend context"}
+            )
+        except InvalidTurn as error:
+            yield _sse_event({"type": "error", "code": "invalid_turn", "message": str(error)})
+        except LLMError as error:
+            yield _sse_event({"type": "error", "code": "llm_error", "message": str(error)})
+
+    @app.post("/v1/agent/chat/stream")
+    def chat_stream(payload: ChatRequest, x_agent_key: str = Header(default="")) -> Response:
+        if not app.state.shared_key or x_agent_key != app.state.shared_key:
+            return JSONResponse(
+                status_code=401, content={"code": "unauthorized", "message": "Invalid agent key"}
+            )
+        try:
+            if payload.model:
+                llm = app.state.llms.get(payload.model)
+                if llm is None:
+                    llm = app.state.llms[payload.model] = model_factory(payload.model)
+            else:
+                llm = app.state.llm
+        except LLMError as error:
+            return JSONResponse(
+                status_code=502, content={"code": "llm_error", "message": str(error)}
+            )
+        return StreamingResponse(
+            _stream_events(llm, payload),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     if scoring_router is not None:
         app.include_router(scoring_router)

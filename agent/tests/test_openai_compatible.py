@@ -17,7 +17,7 @@ from llm.openai_compatible import (
     load_config,
     model_factory,
 )
-from llm.types import LLMError, Message, ToolSpec
+from llm.types import LLMError, Message, StreamDone, TextDelta, ThinkingDelta, ToolSpec
 
 
 README_DIR = CONFIG_DIR
@@ -282,3 +282,142 @@ def test_constructing_the_adapter_does_not_need_the_sdk():
     built = llm()
     assert built._client is None
     assert "openai" not in sys.modules
+
+
+# ---- stream() ----
+
+
+class FakeChunk:
+    """model_dump() 是 OpenAI SDK chunk 物件唯一被用到的方法。"""
+
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def model_dump(self) -> dict:
+        return self._payload
+
+
+def stub_stream(monkeypatch, built: OpenAICompatibleLLM, chunks: list[dict]):
+    """接住 _connect().chat.completions.create(**request)，回一串 FakeChunk。"""
+    captured = {}
+
+    class Completions:
+        def create(self, **request):
+            captured["request"] = request
+            return [FakeChunk(payload) for payload in chunks]
+
+    class Chat:
+        completions = Completions()
+
+    class Client:
+        chat = Chat()
+
+    monkeypatch.setattr(built, "_connect", lambda: Client())
+    return captured
+
+
+def test_stream_yields_text_and_thinking_deltas_in_order(monkeypatch):
+    built = llm()
+    chunks = [
+        {"choices": [{"index": 0, "delta": {"reasoning_content": "想"}}]},
+        {"choices": [{"index": 0, "delta": {"reasoning_content": "一下"}}]},
+        {"choices": [{"index": 0, "delta": {"content": "好"}}]},
+        {"choices": [{"index": 0, "delta": {"content": "的"}, "finish_reason": "stop"}]},
+        {"choices": [{"index": 0, "delta": {}}], "usage": {"prompt_tokens": 5, "completion_tokens": 2}},
+    ]
+    captured = stub_stream(monkeypatch, built, chunks)
+
+    result = list(built.stream(system="S", messages=[Message("user", "hi")]))
+
+    assert result[:4] == [
+        ThinkingDelta("想"),
+        ThinkingDelta("一下"),
+        TextDelta("好"),
+        TextDelta("的"),
+    ]
+    done = result[-1]
+    assert isinstance(done, StreamDone)
+    assert done.reply.text == "好的"
+    assert done.reply.stop_reason == "stop"
+    assert (done.reply.usage.input_tokens, done.reply.usage.output_tokens) == (5, 2)
+    assert captured["request"]["stream"] is True
+    assert captured["request"]["stream_options"] == {"include_usage": True}
+
+
+def test_stream_accumulates_fragmented_tool_calls(monkeypatch):
+    built = llm()
+    chunks = [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "id": "call_1", "function": {"name": "expand_", "arguments": ""}}
+                        ]
+                    },
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "function": {"name": "node", "arguments": '{"address":'}}
+                        ]
+                    },
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '"TXabc"}'}}]},
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        },
+    ]
+    stub_stream(monkeypatch, built, chunks)
+
+    result = list(built.stream(system="S", messages=[Message("user", "hi")]))
+
+    done = result[-1]
+    assert isinstance(done, StreamDone)
+    assert done.reply.stop_reason == "tool_calls"
+    assert len(done.reply.tool_calls) == 1
+    call = done.reply.tool_calls[0]
+    assert (call.id, call.name, call.arguments) == ("call_1", "expand_node", {"address": "TXabc"})
+
+
+def test_stream_raises_on_an_inline_error_chunk(monkeypatch):
+    built = llm()
+    stub_stream(monkeypatch, built, [{"error": {"message": "boom"}}])
+    with pytest.raises(LLMError, match="OpenAI 回覆失敗"):
+        list(built.stream(system="S", messages=[Message("user", "hi")]))
+
+
+def test_stream_classifies_sdk_exceptions_raised_mid_iteration(monkeypatch):
+    built = llm()
+
+    class Completions:
+        def create(self, **request):
+            def generator():
+                yield FakeChunk({"choices": [{"index": 0, "delta": {"content": "先"}}]})
+                raise RuntimeError("Error code: 429 - slow down")
+
+            return generator()
+
+    class Chat:
+        completions = Completions()
+
+    class Client:
+        chat = Chat()
+
+    monkeypatch.setattr(built, "_connect", lambda: Client())
+
+    with pytest.raises(LLMError, match="額度或速率上限"):
+        list(built.stream(system="S", messages=[Message("user", "hi")]))

@@ -12,12 +12,13 @@ from llm.base import (
     LLM,
     BaseLLM,
     classify_error,
+    complete_as_stream,
     dump_failed_request,
     parse_arguments,
     resolve_stop_reason,
 )
 from llm.fake import FakeLLM
-from llm.types import LLMError, Message, Reply, ToolCall, ToolSpec, Usage
+from llm.types import LLMError, Message, Reply, StreamDone, TextDelta, ToolCall, ToolSpec, Usage
 
 
 class DictLLM(BaseLLM):
@@ -357,3 +358,25 @@ def test_fake_llm_is_a_base_llm_and_an_llm():
     llm = FakeLLM()
     assert isinstance(llm, BaseLLM)
     assert isinstance(llm, LLM)
+
+
+# ---- stream() 骨架：沒有真的串流能力時墊一個一次性 chunk ----
+
+
+def test_complete_as_stream_yields_one_text_delta_then_done():
+    reply = Reply(text="看一下", usage=Usage(3, 1))
+    chunks = list(complete_as_stream(lambda **_: reply, system="S", messages=[]))
+    assert chunks == [TextDelta("看一下"), StreamDone(reply)]
+
+
+def test_complete_as_stream_skips_the_text_delta_when_reply_has_no_text():
+    reply = Reply(tool_calls=(ToolCall("c", "t", {}),), stop_reason="tool_calls")
+    chunks = list(complete_as_stream(lambda **_: reply, system="S", messages=[]))
+    assert chunks == [StreamDone(reply)]
+
+
+def test_base_llm_stream_default_delegates_to_complete():
+    reply = Reply(text="ok", usage=Usage(3, 1, 0))
+    llm = DictLLM(sender=lambda request: {"text": "ok", "usage": (3, 1, 0)})
+    chunks = list(llm.stream(system="S", messages=[Message("user", "hi")]))
+    assert chunks == [TextDelta("ok"), StreamDone(reply)]

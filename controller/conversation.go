@@ -34,6 +34,16 @@ type AgentProvider interface {
 	Respond(context.Context, AgentRequest) (AgentResponse, error)
 }
 
+// AgentStreamProvider is optional: a provider that can stream a turn's
+// text/thinking deltas implements it (same pattern as AgentModelLister).
+// onChunk's kind is "text" or "thinking"; it is called once per delta, in
+// order, before RespondStream returns the turn's final AgentResponse.
+type AgentStreamProvider interface {
+	RespondStream(
+		ctx context.Context, request AgentRequest, onChunk func(kind, text string) error,
+	) (AgentResponse, error)
+}
+
 // AgentModel is one compatible model the sidecar can run, as shown to the
 // Owner. Endpoint URLs and tokens stay in the sidecar.
 type AgentModel struct {
@@ -208,6 +218,126 @@ func (h *ConversationHandler) SubmitConversation(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"messages": conversationDTOs(messages)})
+}
+
+// SubmitConversationStream is SubmitConversation's streaming twin: it answers
+// with Server-Sent Events instead of one JSON body, forwarding each
+// text/thinking delta as it arrives from the Agent. It still persists exactly
+// the same way SubmitConversation does, once the turn is over.
+//
+// Once the first byte of the SSE response has gone out, HTTP status and
+// headers can't change anymore — a failure from that point on can only be
+// reported as a terminal "error" frame, not a different status code. Before
+// that point (the Agent hasn't produced anything yet, e.g. the Investigation
+// lookup itself failed) this still answers exactly like SubmitConversation:
+// a normal JSON error with the matching status.
+func (h *ConversationHandler) SubmitConversationStream(c *gin.Context) {
+	request, ok := decodeSubmitRequest(c)
+	if !ok {
+		return
+	}
+	ownerID := c.GetUint("user_id")
+	investigationID := c.Param("id")
+
+	streamer, ok := h.provider.(AgentStreamProvider)
+	if !ok {
+		h.writeUnavailable(c, ownerID, investigationID, request, nil)
+		return
+	}
+
+	history, err := model.LoadRecentConversation(ownerID, investigationID, agentHistoryMessages)
+	if err != nil {
+		writeInvestigationLookupError(c, err)
+		return
+	}
+	conversation := append(agentConversation(history), AgentConversationMessage{
+		Role: store.ConversationRoleUser, Content: request.Message,
+	})
+
+	flusher, canFlush := c.Writer.(http.Flusher)
+	started := false
+	writeFrame := func(payload gin.H) {
+		if !started {
+			started = true
+			c.Header("Content-Type", "text/event-stream")
+			c.Header("Cache-Control", "no-cache")
+			c.Writer.WriteHeader(http.StatusOK)
+		}
+		raw, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return // a frame that can't be marshaled can't be reported either
+		}
+		_, _ = c.Writer.Write([]byte("data: "))
+		_, _ = c.Writer.Write(raw)
+		_, _ = c.Writer.Write([]byte("\n\n"))
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+
+	answer, err := streamer.RespondStream(c.Request.Context(), AgentRequest{
+		OwnerID:         ownerID,
+		InvestigationID: investigationID,
+		Mode:            AgentModeChat,
+		Conversation:    conversation,
+		Model:           request.Model,
+	}, func(kind, text string) error {
+		writeFrame(gin.H{"type": kind + "_delta", "text": text})
+		return nil
+	})
+	if err != nil {
+		if !started {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				writeInvestigationLookupError(c, err)
+				return
+			}
+			h.writeUnavailable(c, ownerID, investigationID, request, err)
+			return
+		}
+		h.streamUnavailable(c, writeFrame, ownerID, investigationID, request, err)
+		return
+	}
+
+	messages, err := model.PersistConversationTurn(
+		ownerID, investigationID, request.IdempotencyKey, request.Message, answer.Content,
+	)
+	if err != nil {
+		if !started {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				writeInvestigationLookupError(c, err)
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"code": "internal_error", "message": "Internal server error"})
+			return
+		}
+		writeFrame(gin.H{"type": "error", "code": "internal_error", "message": "Internal server error"})
+		return
+	}
+	writeFrame(gin.H{"type": "done", "messages": conversationDTOs(messages)})
+}
+
+// streamUnavailable is writeUnavailable's twin for a turn that already
+// started streaming: the question still gets persisted with the same
+// agent_unavailable outcome, but the client learns about it through a
+// terminal SSE frame instead of a 503 response.
+func (h *ConversationHandler) streamUnavailable(
+	c *gin.Context, writeFrame func(gin.H), ownerID uint, investigationID string,
+	request submitConversationRequest, cause error,
+) {
+	if cause != nil && utils.SysLog != nil {
+		utils.SysLog.Errorf(
+			"Agent turn failed for investigation %s: %v, ReqId: %s",
+			investigationID, cause, c.GetString(utils.RequestIdKey),
+		)
+	}
+	messages, err := model.PersistUnavailableConversation(
+		ownerID, investigationID, request.IdempotencyKey, request.Message,
+	)
+	if err != nil {
+		writeFrame(gin.H{"type": "error", "code": "internal_error", "message": "Internal server error"})
+		return
+	}
+	writeFrame(gin.H{"type": "error", "code": "agent_unavailable", "messages": conversationDTOs(messages)})
 }
 
 // writeUnavailable stores the Owner's message with a machine outcome and

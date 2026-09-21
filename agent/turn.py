@@ -4,8 +4,10 @@ tool loop 由 Go 驅動：我們回 tool_calls，Go 去執行並審核，再帶 
 這兩次呼叫之間的狀態存在 session 裡。
 """
 
+from typing import Iterator
+
 from llm.base import LLM
-from llm.types import Message, Reply
+from llm.types import Message, Reply, StreamChunk, StreamDone
 from prompt import build_system_prompt
 from schemas import ChatRequest
 from session import SessionStore
@@ -41,18 +43,8 @@ def _open(store: SessionStore, request: ChatRequest):
     )
 
 
-def run_turn(
-    *, store: SessionStore, llm: LLM, request: ChatRequest, max_tokens: int = 4096
-) -> Reply:
-    session = _resume(store, request) if request.is_continuation else _open(store, request)
-
-    reply = llm.complete(
-        system=session.system_prompt,
-        messages=session.pending,
-        tools=session.tools,
-        max_tokens=max_tokens,
-    )
-
+def _settle(session, reply: Reply) -> None:
+    """一輪跑完後的 session 簿記，非串流／串流共用同一套規則。"""
     if reply.tool_calls:
         # 記下模型這一手，Go 執行完回填 tool_results 時才接得上。
         # provider_steps 一起帶著：Gemini 要靠裡面的簽章才肯收工具結果。
@@ -67,4 +59,37 @@ def run_turn(
     else:
         # 一輪結束。對話歷史的 source of truth 是 Go 的資料庫，這裡不留。
         session.pending.clear()
+
+
+def run_turn(
+    *, store: SessionStore, llm: LLM, request: ChatRequest, max_tokens: int = 4096
+) -> Reply:
+    session = _resume(store, request) if request.is_continuation else _open(store, request)
+
+    reply = llm.complete(
+        system=session.system_prompt,
+        messages=session.pending,
+        tools=session.tools,
+        max_tokens=max_tokens,
+    )
+    _settle(session, reply)
     return reply
+
+
+def run_turn_stream(
+    *, store: SessionStore, llm: LLM, request: ChatRequest, max_tokens: int = 4096
+) -> Iterator[StreamChunk]:
+    """跟 run_turn 同一輪邏輯，邊收邊吐 chunk。最後一個一定是 StreamDone，
+    session 簿記在那時才做——跟 run_turn 一樣，只看完整組好的 Reply。
+    """
+    session = _resume(store, request) if request.is_continuation else _open(store, request)
+
+    for chunk in llm.stream(
+        system=session.system_prompt,
+        messages=session.pending,
+        tools=session.tools,
+        max_tokens=max_tokens,
+    ):
+        if isinstance(chunk, StreamDone):
+            _settle(session, chunk.reply)
+        yield chunk

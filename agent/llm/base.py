@@ -2,8 +2,11 @@
 
 兩樣東西：
 
-- `LLM`：呼叫端（turn.py）依賴的介面。只有一個方法。串流不做——Go 那側要的是
-  一個完整回合，沒有接收端。tool loop 也不在這裡跑，loop 由 Go 執行
+- `LLM`：呼叫端（turn.py）依賴的介面。`complete()` 跑一個完整回合；`stream()`
+  跑同一個回合但邊收邊吐 `StreamChunk`，最後一定以 `StreamDone` 收尾，裡面的
+  `reply` 跟 `complete()` 會回的完全一樣，續跑 tool loop 的簿記只看這個。沒有
+  真的串流能力的 adapter 用 `complete_as_stream` 墊一個「一次性 chunk」的版本，
+  呼叫端不用分辨誰真的在串誰沒有。tool loop 也不在這裡跑，loop 由 Go 執行
   （見 docs/development-rules.md 第 6 節）。
 - `BaseLLM`：request/response 型 adapter 的共用實作。共用的是「邏輯」——訊息
   怎麼走、模型那一手怎麼回放、工具怎麼宣告、回覆怎麼組、錯誤怎麼分類；adapter
@@ -16,9 +19,20 @@
 import json
 import os
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Iterable, Protocol, Sequence, runtime_checkable
+from typing import Any, Callable, ClassVar, Iterable, Iterator, Protocol, Sequence, runtime_checkable
 
-from .types import LLMError, Message, Reply, StopReason, ToolCall, ToolSpec, Usage
+from .types import (
+    LLMError,
+    Message,
+    Reply,
+    StopReason,
+    StreamChunk,
+    StreamDone,
+    TextDelta,
+    ToolCall,
+    ToolSpec,
+    Usage,
+)
 
 Step = Any
 """wire format 裡的一則訊息／一個工具宣告，形狀由 adapter 決定。
@@ -45,8 +59,47 @@ class LLM(Protocol):
         """
         ...
 
+    def stream(
+        self,
+        *,
+        system: str,
+        messages: Sequence[Message],
+        tools: Sequence[ToolSpec] = (),
+        schema: dict | None = None,
+        max_tokens: int = 4096,
+    ) -> Iterator[StreamChunk]:
+        """跑同一個回合，邊收邊吐。最後一個 chunk 一定是 StreamDone。
+
+        沒有真的串流能力的 adapter 用 complete_as_stream 墊一個只有一個 chunk
+        的版本；呼叫端一律當作真的在串就好。
+        """
+        ...
+
 
 # ---- 中性的小工具：不碰 SDK，每家 adapter 都用得上 ----
+
+
+def complete_as_stream(
+    complete: Callable[..., Reply],
+    *,
+    system: str,
+    messages: Sequence[Message],
+    tools: Sequence[ToolSpec] = (),
+    schema: dict | None = None,
+    max_tokens: int = 4096,
+) -> Iterator[StreamChunk]:
+    """給沒有真的串流能力的 adapter 墊一個 stream()：整段答案一次回來，
+    包成一個 TextDelta 再一個 StreamDone，呼叫端不用分辨誰真的在串。
+
+    沒有思考文字可吐——那些 adapter 的 complete() 本來就沒有把思考文字
+    從 payload 裡撈出來，這裡也生不出來。
+    """
+    reply = complete(
+        system=system, messages=messages, tools=tools, schema=schema, max_tokens=max_tokens
+    )
+    if reply.text:
+        yield TextDelta(reply.text)
+    yield StreamDone(reply)
 
 
 def function_declaration(tool: ToolSpec) -> dict:
@@ -259,6 +312,25 @@ class BaseLLM(ABC):
             dump_failed_request(request)
             raise self.classify_error(error) from error
         return self.parse_reply(payload)
+
+    def stream(
+        self,
+        *,
+        system: str,
+        messages: Sequence[Message],
+        tools: Sequence[ToolSpec] = (),
+        schema: dict | None = None,
+        max_tokens: int = 4096,
+    ) -> Iterator[StreamChunk]:
+        """預設：不是真的串流，墊一個一次性 chunk。真的能串的 adapter 覆寫這個。"""
+        yield from complete_as_stream(
+            self.complete,
+            system=system,
+            messages=messages,
+            tools=tools,
+            schema=schema,
+            max_tokens=max_tokens,
+        )
 
     @abstractmethod
     def build_request(

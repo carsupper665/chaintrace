@@ -83,6 +83,43 @@ func (p *Provider) Respond(
 	return controller.AgentResponse{Content: text}, nil
 }
 
+// RespondStream is Respond's streaming twin: same scope resolution, evidence,
+// and tool loop, but the opening call and every continuation stream their
+// text/thinking deltas to onChunk as they arrive instead of only returning
+// once the whole answer is known. It still returns the same
+// controller.AgentResponse Respond does, once the turn is over, so
+// persistence doesn't need to change.
+func (p *Provider) RespondStream(
+	ctx context.Context, request controller.AgentRequest, onChunk func(kind, text string) error,
+) (controller.AgentResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, p.options.TurnTimeout)
+	defer cancel()
+
+	scope, err := p.resolveScope(request.OwnerID, request.InvestigationID)
+	if err != nil {
+		return controller.AgentResponse{}, err
+	}
+	evidence := p.evidenceFor(scope)
+
+	mode := string(request.Mode)
+	if mode == "" {
+		mode = string(controller.AgentModeChat)
+	}
+	text, err := p.runTurnStream(ctx, scope, chatRequest{
+		SessionID: request.InvestigationID,
+		DatasetID: scope.sessionKey(),
+		Mode:      mode,
+		Evidence:  &evidence,
+		Messages:  wireMessages(request.Conversation),
+		Tools:     ToolSpecs(),
+		Model:     request.Model,
+	}, onChunk)
+	if err != nil {
+		return controller.AgentResponse{}, err
+	}
+	return controller.AgentResponse{Content: text}, nil
+}
+
 // runTurn drives the tool loop. It takes an already-resolved scope so the loop
 // itself can be tested without a database.
 func (p *Provider) runTurn(
@@ -116,6 +153,57 @@ func (p *Provider) runTurn(
 		return "", fmt.Errorf("agent produced no answer")
 	}
 	return reply.Text, nil
+}
+
+// runTurnStream is runTurn's streaming twin. Tool-call-only legs stream
+// nothing visible — the sidecar only emits text/thinking deltas for the leg
+// that produces the final answer — so intermediate tool activity looks the
+// same as it does today (not shown).
+func (p *Provider) runTurnStream(
+	ctx context.Context, scope turnScope, opening chatRequest, onChunk func(kind, text string) error,
+) (string, error) {
+	runner := toolRunner{options: p.options, runs: p.runs}
+	reply, err := p.transport.chatStream(ctx, opening, onChunk)
+	if err != nil {
+		return "", err
+	}
+
+	for calls := 0; len(reply.ToolCalls) > 0 && calls < p.options.MaxToolCalls; calls++ {
+		if ctx.Err() != nil {
+			break
+		}
+		results := make([]ToolResult, 0, len(reply.ToolCalls))
+		for _, call := range reply.ToolCalls {
+			results = append(results, runner.execute(scope, call))
+		}
+		reply, err = p.continueTurnStream(ctx, opening, results, onChunk)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if reply.Text == "" {
+		return "", fmt.Errorf("agent produced no answer")
+	}
+	return reply.Text, nil
+}
+
+// continueTurnStream is continueTurn's streaming twin; see its docstring for
+// the session-expired replay rule, which is unchanged here.
+func (p *Provider) continueTurnStream(
+	ctx context.Context, opening chatRequest, results []ToolResult, onChunk func(kind, text string) error,
+) (chatResponse, error) {
+	reply, err := p.transport.chatStream(ctx, chatRequest{
+		SessionID:   opening.SessionID,
+		DatasetID:   opening.DatasetID,
+		Mode:        opening.Mode,
+		ToolResults: results,
+		Model:       opening.Model,
+	}, onChunk)
+	if !errors.Is(err, errSessionExpired) {
+		return reply, err
+	}
+	return p.transport.chatStream(ctx, opening, onChunk)
 }
 
 // continueTurn feeds tool results back. If the sidecar has lost the session —
