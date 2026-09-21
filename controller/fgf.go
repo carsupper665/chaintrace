@@ -6,11 +6,12 @@ import (
 	"chaintrace/model/store"
 	"chaintrace/utils"
 	"errors"
+	"net/http"
+	"os"
+
 	fgfoidc "github.com/carsupper665/Frog-Grid-Forge/fgf-oidc"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"net/http"
-	"os"
 )
 
 func fgfConfig() fgfoidc.Config { return fgfoidc.FromEnv(os.Getenv, "chaintrace_fgf_flow") }

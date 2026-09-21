@@ -70,6 +70,6 @@ require (
 	modernc.org/sqlite v1.23.1 // indirect
 )
 
-require github.com/carsupper665/Frog-Grid-Forge/fgf-oidc v0.0.0
+require github.com/carsupper665/Frog-Grid-Forge/fgf-oidc v0.0.0-20260912152648-bc252c442836
 
-replace github.com/carsupper665/Frog-Grid-Forge/fgf-oidc => ../fgf-oidc
+// replace github.com/carsupper665/Frog-Grid-Forge/fgf-oidc => ../fgf-oidc
