@@ -177,6 +177,61 @@ test("conversation BFF forwards only the command contract and preserves persiste
   ]);
 });
 
+test("conversation BFF forwards the picked model and proxies the model list", async (t) => {
+  const received = [];
+  const backend = await startBackend(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    received.push({
+      path: request.url,
+      method: request.method,
+      authorization: request.headers.authorization,
+      body: body ? JSON.parse(body) : null,
+    });
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(
+      request.method === "GET"
+        ? JSON.stringify({ models: [{ id: "wire-id", displayName: "Furen-max" }] })
+        : JSON.stringify({ messages: [] }),
+    );
+  });
+  t.after(() => backend.close());
+  process.env.CHAINTRACE_BACKEND_URL = backend.url;
+  const cookie = { Cookie: "chaintrace_credential=owner.jwt" };
+
+  const listed = await fetchApp("/api/agent/models", { headers: cookie });
+  assert.equal(listed.status, 200);
+  assert.deepEqual(await listed.json(), {
+    models: [{ id: "wire-id", displayName: "Furen-max" }],
+  });
+
+  const posted = await fetchApp("/api/investigations/inv-09/conversation", {
+    method: "POST",
+    headers: { ...cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      idempotencyKey: "command-key-09",
+      message: "問題",
+      model: "wire-id",
+    }),
+  });
+  assert.equal(posted.status, 200);
+
+  assert.deepEqual(received, [
+    {
+      path: "/api/v1/agent/models",
+      method: "GET",
+      authorization: "Bearer owner.jwt",
+      body: null,
+    },
+    {
+      path: "/api/v1/investigations/inv-09/conversation",
+      method: "POST",
+      authorization: "Bearer owner.jwt",
+      body: { idempotencyKey: "command-key-09", message: "問題", model: "wire-id" },
+    },
+  ]);
+});
+
 test("removed agent chat endpoint is no longer an active route", async () => {
   const response = await fetchApp("/api/middle/agent/chat", {
     method: "POST",

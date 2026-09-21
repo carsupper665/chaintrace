@@ -1,7 +1,11 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { ConversationClientError } from "@/src/middle/conversation-client";
+import {
+  ConversationClientError,
+  getAgentModels,
+} from "@/src/middle/conversation-client";
+import type { AgentModel } from "@/src/middle/conversation-contract";
 import type { AnalysisFlowResult } from "@/src/middle/investigation-client";
 import {
   AnalysisRunClientError,
@@ -55,6 +59,10 @@ export function useChainTrace() {
   const [addressDraft, setAddressDraft] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [conversationError, setConversationError] = useState("");
+  // Compatible models the Agent offers. Empty hides the picker; "" as the
+  // selection means the Agent's default provider.
+  const [agentModels, setAgentModels] = useState<AgentModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
   const [hasMoreConversation, setHasMoreConversation] = useState(false);
   const [isConversationLoading, setIsConversationLoading] = useState(false);
   const [conversationReloadToken, setConversationReloadToken] = useState(0);
@@ -320,6 +328,16 @@ export function useChainTrace() {
   }, [active?.id, conversationBrowser, conversationReloadToken]);
 
   useEffect(() => () => conversationBrowser.clear(), [conversationBrowser]);
+
+  // Loaded once; a failure just leaves the picker hidden rather than blocking
+  // the workspace, since the default model still works without it.
+  useEffect(() => {
+    const controller = new AbortController();
+    getAgentModels(fetch, controller.signal)
+      .then(setAgentModels)
+      .catch(() => setAgentModels([]));
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const investigationId = active?.id;
@@ -994,7 +1012,11 @@ export function useChainTrace() {
     try {
       const investigationId =
         active?.id || (await openInvestigationForCommand());
-      await conversationBrowser.submit(command);
+      await conversationBrowser.submit(
+        command,
+        undefined,
+        selectedModel || undefined,
+      );
       if (conversationAttempt.current !== attempt) return;
       const conversation = conversationBrowser.getState();
       if (conversation.investigationId !== investigationId) return;
@@ -1365,6 +1387,9 @@ export function useChainTrace() {
     analysisPanelRef,
     chatMessages,
     conversationError,
+    agentModels,
+    selectedModel,
+    setSelectedModel,
     contextMenu,
     currentAnalysisResult,
     deleteTarget,

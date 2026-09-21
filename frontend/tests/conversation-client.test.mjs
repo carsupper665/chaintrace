@@ -106,3 +106,43 @@ test("client forwards cursor pagination and uses crypto.randomUUID for command i
     "uuid-from-crypto",
   );
 });
+
+test("client sends the picked model only when one was chosen", async () => {
+  const { postConversationMessage } = await import(
+    "../src/middle/conversation-client.ts"
+  );
+  const bodies = [];
+  const fetchImpl = async (_input, init) => {
+    bodies.push(JSON.parse(init.body));
+    return Response.json({ messages: [] });
+  };
+
+  await postConversationMessage("inv-1", "key-1", "問題", fetchImpl, undefined, "wire-id");
+  await postConversationMessage("inv-1", "key-2", "問題", fetchImpl);
+
+  assert.deepEqual(bodies, [
+    { idempotencyKey: "key-1", message: "問題", model: "wire-id" },
+    { idempotencyKey: "key-2", message: "問題" },
+  ]);
+});
+
+test("client lists agent models and drops malformed entries", async () => {
+  const { getAgentModels } = await import("../src/middle/conversation-client.ts");
+  let requested;
+  const fetchImpl = async (input, init) => {
+    requested = { input: String(input), init };
+    return Response.json({
+      models: [
+        { id: "wire-id", displayName: "Furen-max" },
+        { id: "no-name" },
+        "junk",
+      ],
+    });
+  };
+
+  const models = await getAgentModels(fetchImpl);
+
+  assert.equal(requested.input, "/api/agent/models");
+  assert.equal(requested.init.cache, "no-store");
+  assert.deepEqual(models, [{ id: "wire-id", displayName: "Furen-max" }]);
+});

@@ -29,6 +29,27 @@ func NewAgentHandler(provider AgentProvider) *AgentHandler {
 	return &AgentHandler{provider: provider}
 }
 
+// ListModels returns the compatible models the Owner may pick for a
+// conversation turn. Without an Agent, or with one that cannot enumerate
+// models, it answers agent_unavailable like every other Agent route.
+func (h *AgentHandler) ListModels(c *gin.Context) {
+	lister, ok := h.provider.(AgentModelLister)
+	if h.provider == nil || !ok {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": "agent_unavailable", "message": "Agent is not available"})
+		return
+	}
+	models, err := lister.Models(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": "agent_unavailable", "message": "Agent is not available"})
+		return
+	}
+	items := make([]gin.H, 0, len(models))
+	for _, m := range models {
+		items = append(items, gin.H{"id": m.ID, "displayName": m.DisplayName})
+	}
+	c.JSON(http.StatusOK, gin.H{"models": items})
+}
+
 // GenerateSummary produces the opening summary for an Investigation's current
 // analysis result and stores it as an Agent message in the conversation.
 //

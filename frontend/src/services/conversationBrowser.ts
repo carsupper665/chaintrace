@@ -147,6 +147,7 @@ export function createConversationBrowser(
     async submit(
       message: string,
       idempotencyKey?: string,
+      model?: string,
     ): Promise<ConversationSubmitOutcome> {
       const investigationId = state.investigationId;
       if (!investigationId) {
@@ -170,6 +171,7 @@ export function createConversationBrowser(
         message,
         fetchImpl,
         request.signal,
+        model,
       );
       await adoptNewMessages(investigationId, request.version, outcome.messages);
       if (pendingSubmission?.idempotencyKey === commandKey) {

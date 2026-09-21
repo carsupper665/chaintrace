@@ -42,3 +42,10 @@ export type ConversationErrorResponse = {
 };
 
 export const CONVERSATION_PAGE_SIZE = 50;
+
+// One compatible model the Agent can run, as offered in the command bar. The
+// id is what goes back with a message; the display name is for people.
+export type AgentModel = {
+  id: string;
+  displayName: string;
+};

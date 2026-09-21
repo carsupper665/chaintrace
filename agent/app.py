@@ -16,6 +16,7 @@ from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse
 
 from llm import LLMError, from_env
+from llm.openai_compatible import list_models, model_factory
 from prompt import verify_prompts_present
 from schemas import ChatRequest, ChatResponse
 from session import SessionStore
@@ -59,6 +60,8 @@ def create_app(*, llm=None, store: SessionStore | None = None) -> FastAPI:
 
     app = FastAPI(title="ChainTrace Agent", docs_url=None, redoc_url=None)
     app.state.llm = from_env() if llm is None else llm
+    # 依 model id 建的相容 adapter，建過就留著（client 是 lazy 的，同一個 id 重用連線）。
+    app.state.llms = {}
     # 空的 SessionStore 是 falsy（它有 __len__），所以這裡只能比 None，
     # 用 `store or ...` 會把呼叫端傳進來的 store 悄悄丟掉。
     app.state.store = (
@@ -76,6 +79,20 @@ def create_app(*, llm=None, store: SessionStore | None = None) -> FastAPI:
     def healthz() -> dict:
         return {"status": "ok", "sessions": len(app.state.store)}
 
+    @app.get("/v1/models")
+    def models(x_agent_key: str = Header(default="")) -> JSONResponse:
+        """llm/config 裡可選的相容模型。只有 id 與顯示名稱，token 不出這個 process。"""
+        if not app.state.shared_key or x_agent_key != app.state.shared_key:
+            return JSONResponse(
+                status_code=401, content={"code": "unauthorized", "message": "Invalid agent key"}
+            )
+        try:
+            return JSONResponse(status_code=200, content={"models": list_models()})
+        except LLMError as error:
+            return JSONResponse(
+                status_code=502, content={"code": "llm_error", "message": str(error)}
+            )
+
     @app.post("/v1/agent/chat")
     def chat(payload: ChatRequest, x_agent_key: str = Header(default="")) -> JSONResponse:
         if not app.state.shared_key or x_agent_key != app.state.shared_key:
@@ -83,9 +100,15 @@ def create_app(*, llm=None, store: SessionStore | None = None) -> FastAPI:
                 status_code=401, content={"code": "unauthorized", "message": "Invalid agent key"}
             )
         try:
+            if payload.model:
+                llm = app.state.llms.get(payload.model)
+                if llm is None:
+                    llm = app.state.llms[payload.model] = model_factory(payload.model)
+            else:
+                llm = app.state.llm
             reply = run_turn(
                 store=app.state.store,
-                llm=app.state.llm,
+                llm=llm,
                 request=payload,
                 max_tokens=app.state.max_tokens,
             )

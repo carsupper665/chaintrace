@@ -1465,6 +1465,59 @@ button {
   cursor: not-allowed;
 }
 
+/* 模型下拉沿用 command bar 的邊框、底色與文字色，三個主題各自對齊。 */
+.model-select {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(117, 242, 176, 0.18);
+  border-radius: 7px;
+  background: rgba(20, 28, 24, 0.93);
+  color: var(--ink);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.model-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.model-select:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.model-select option {
+  background: #141c18;
+  color: var(--ink);
+}
+
+.theme-light .model-select {
+  border-color: rgba(22, 140, 85, 0.17);
+  background: #ffffff;
+  color: #202622;
+}
+
+.theme-light .model-select option {
+  background: #ffffff;
+  color: #202622;
+}
+
+.theme-dark .model-select {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: #1b1b1b;
+  color: #c8c3cb;
+}
+
+.theme-dark .model-select:focus {
+  border-color: #ded9e2;
+}
+
+.theme-dark .model-select option {
+  background: #1b1b1b;
+  color: #c8c3cb;
+}
+
 .analysis-panel {
   min-width: 0;
   padding: 0 19px 20px;

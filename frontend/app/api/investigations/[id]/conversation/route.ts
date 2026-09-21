@@ -38,6 +38,7 @@ export async function POST(request: Request, context: RouteContext) {
   const command = (payload || {}) as {
     idempotencyKey?: unknown;
     message?: unknown;
+    model?: unknown;
   };
   if (
     typeof command.idempotencyKey !== "string" ||
@@ -60,6 +61,9 @@ export async function POST(request: Request, context: RouteContext) {
     JSON.stringify({
       idempotencyKey: command.idempotencyKey,
       message: command.message,
+      ...(typeof command.model === "string" && command.model
+        ? { model: command.model }
+        : {}),
     }),
   );
 }

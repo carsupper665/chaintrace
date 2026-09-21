@@ -1,5 +1,6 @@
 """HTTP 層測試。用 FakeLLM，不碰網路、不需要金鑰。"""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import create_app
@@ -179,3 +180,40 @@ def test_unknown_fields_are_ignored(monkeypatch):
     payload = first_turn()
     payload["someFutureField"] = {"x": 1}
     assert client.post("/v1/agent/chat", json=payload, headers=HEADERS).status_code == 200
+
+
+def test_models_endpoint_needs_key_and_lists_display_names(monkeypatch):
+    client, _, _ = build([], monkeypatch)
+    monkeypatch.setattr(
+        "app.list_models", lambda: [{"id": "wire", "display_name": "顯示名"}]
+    )
+    assert client.get("/v1/models").status_code == 401
+    response = client.get("/v1/models", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json() == {"models": [{"id": "wire", "display_name": "顯示名"}]}
+
+
+def test_chat_with_model_uses_the_factory_once(monkeypatch):
+    client, default_llm, _ = build([], monkeypatch)
+    picked = FakeLLM([Reply(text="來自選的模型"), Reply(text="第二次")])
+    built = []
+
+    def factory(model_id):
+        built.append(model_id)
+        return picked
+
+    monkeypatch.setattr("app.model_factory", factory)
+    first = client.post("/v1/agent/chat", json=first_turn(model="wire"), headers=HEADERS)
+    assert first.status_code == 200
+    assert first.json()["text"] == "來自選的模型"
+    client.post("/v1/agent/chat", json=first_turn(model="wire"), headers=HEADERS)
+    assert built == ["wire"]  # 同一個 id 只建一次
+    assert len(picked.calls) == 2
+    assert default_llm.calls == []  # 預設的那個沒被碰
+
+
+def test_chat_without_model_uses_the_default(monkeypatch):
+    client, default_llm, _ = build([Reply(text="預設")], monkeypatch)
+    monkeypatch.setattr("app.model_factory", lambda model_id: pytest.fail("不該建"))
+    assert client.post("/v1/agent/chat", json=first_turn(), headers=HEADERS).json()["text"] == "預設"
+    assert len(default_llm.calls) == 1

@@ -339,3 +339,57 @@ func TestAnotherOwnerCannotReachTheAgent(t *testing.T) {
 		t.Error("the Agent was reached by someone who does not own the Investigation")
 	}
 }
+
+// listingAgent also enumerates models, like the real sidecar-backed provider.
+type listingAgent struct {
+	scriptedAgent
+	models []controller.AgentModel
+}
+
+func (a *listingAgent) Models(context.Context) ([]controller.AgentModel, error) {
+	return a.models, nil
+}
+
+func TestAgentModelsListsWhatTheProviderOffers(t *testing.T) {
+	agent := &listingAgent{models: []controller.AgentModel{{ID: "wire-id", DisplayName: "Furen-max"}}}
+	test, token := newAgentTest(t, agent)
+
+	response := test.request(http.MethodGet, "/api/v1/agent/models", nil, token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", response.Code, response.Body.String())
+	}
+	var got struct {
+		Models []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"displayName"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "wire-id" || got.Models[0].DisplayName != "Furen-max" {
+		t.Errorf("models = %+v", got.Models)
+	}
+}
+
+// A provider that cannot enumerate models degrades like a missing Agent.
+func TestAgentModelsUnavailableWithoutALister(t *testing.T) {
+	test, token := newAgentTest(t, &scriptedAgent{answer: "ok"})
+	response := test.request(http.MethodGet, "/api/v1/agent/models", nil, token)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestConversationPassesTheChosenModel(t *testing.T) {
+	agent := &scriptedAgent{answer: "ok"}
+	test, token := newAgentTest(t, agent)
+	investigationID := createConversationInvestigation(t, test, token, "Model pick")
+
+	test.request(http.MethodPost, "/api/v1/investigations/"+investigationID+"/conversation",
+		map[string]string{"idempotencyKey": "cmd-1", "message": "hi", "model": "wire-id"}, token)
+
+	if len(agent.requests) != 1 || agent.requests[0].Model != "wire-id" {
+		t.Fatalf("provider requests = %+v", agent.requests)
+	}
+}

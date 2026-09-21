@@ -149,6 +149,28 @@ func TestToolCallIsExecutedAndFedBack(t *testing.T) {
 	}
 }
 
+// The model the turn opened with must also drive every continuation: the
+// sidecar picks the adapter per request, and switching mid-turn would replay
+// one model's steps into another.
+func TestChosenModelStaysForTheWholeTurn(t *testing.T) {
+	agent := newFakeAgent(t,
+		toolCallReply(ToolGetAddressDetail, map[string]any{"address": targetAddress}),
+		chatResponse{Text: "ok", StopReason: "stop"},
+	)
+	provider := agent.provider(t, Options{})
+	opening := openingRequest()
+	opening.Model = "wire-id"
+
+	if _, err := provider.runTurn(context.Background(), testScope(), opening); err != nil {
+		t.Fatalf("runTurn: %v", err)
+	}
+	for i, request := range agent.requests {
+		if request.Model != "wire-id" {
+			t.Errorf("request %d model = %q, want wire-id", i, request.Model)
+		}
+	}
+}
+
 // A refused tool must still reach the Agent so it can tell the analyst.
 func TestOutOfScopeRefusalIsSentBackToTheAgent(t *testing.T) {
 	agent := newFakeAgent(t,

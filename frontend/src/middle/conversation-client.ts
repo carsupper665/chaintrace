@@ -1,4 +1,5 @@
 import type {
+  AgentModel,
   AgentSummaryOutcome,
   AgentUnavailableOutcome,
   ConversationErrorResponse,
@@ -31,6 +32,8 @@ function conversationPath(investigationId: string) {
 function summaryPath(investigationId: string) {
   return `/api/investigations/${encodeURIComponent(investigationId)}/agent/summary`;
 }
+
+const modelsPath = "/api/agent/models";
 
 function stableErrorMessage(status: number, code: string) {
   // Codes are checked before status codes: the summary endpoint answers 404
@@ -137,6 +140,7 @@ export async function postConversationMessage(
   message: string,
   fetchImpl: Fetch = fetch,
   signal?: AbortSignal,
+  model?: string,
 ): Promise<ConversationSubmitOutcome> {
   const response = await fetchImpl(conversationPath(investigationId), {
     method: "POST",
@@ -144,7 +148,9 @@ export async function postConversationMessage(
       Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ idempotencyKey, message }),
+    // model is only sent when the Owner picked one; absent means the Agent's
+    // default provider.
+    body: JSON.stringify({ idempotencyKey, message, ...(model ? { model } : {}) }),
     cache: "no-store",
     signal,
   });
@@ -170,6 +176,27 @@ export async function postConversationMessage(
     };
   }
   throw responseError(response, payload);
+}
+
+function isAgentModel(value: unknown): value is AgentModel {
+  if (!value || typeof value !== "object") return false;
+  const model = value as Partial<AgentModel>;
+  return typeof model.id === "string" && typeof model.displayName === "string";
+}
+
+export async function getAgentModels(
+  fetchImpl: Fetch = fetch,
+  signal?: AbortSignal,
+): Promise<AgentModel[]> {
+  const response = await fetchImpl(modelsPath, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+    signal,
+  });
+  const payload = await responsePayload(response);
+  if (!response.ok) throw responseError(response, payload);
+  const models = (payload as { models?: unknown } | null)?.models;
+  return Array.isArray(models) ? models.filter(isAgentModel) : [];
 }
 
 // The backend answers 201 when it generated a summary and 200 when it returned

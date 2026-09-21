@@ -86,6 +86,9 @@ class ChatRequest(BaseModel):
     tool_results: list[ToolResultIn] | None = None
     """帶了這個就是續跑 tool loop。"""
 
+    model: str = ""
+    """要用哪個相容模型（llm/config 裡的 id）。空字串走 LLM_PROVIDER 的預設。"""
+
     @property
     def is_continuation(self) -> bool:
         return bool(self.tool_results)

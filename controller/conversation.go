@@ -34,6 +34,19 @@ type AgentProvider interface {
 	Respond(context.Context, AgentRequest) (AgentResponse, error)
 }
 
+// AgentModel is one compatible model the sidecar can run, as shown to the
+// Owner. Endpoint URLs and tokens stay in the sidecar.
+type AgentModel struct {
+	ID          string
+	DisplayName string
+}
+
+// AgentModelLister is optional: a provider that can enumerate models
+// implements it, and the models endpoint answers agent_unavailable otherwise.
+type AgentModelLister interface {
+	Models(context.Context) ([]AgentModel, error)
+}
+
 // AgentMode selects which prompt the Agent runs. Summary opens an
 // Investigation with an overview; chat answers an Owner's question.
 type AgentMode string
@@ -51,6 +64,9 @@ type AgentRequest struct {
 	InvestigationID string
 	Mode            AgentMode
 	Conversation    []AgentConversationMessage
+	// Model is the Owner's pick from AgentModelLister; empty means the
+	// sidecar's default.
+	Model string
 }
 
 type AgentConversationMessage struct {
@@ -69,6 +85,7 @@ type ConversationHandler struct {
 type submitConversationRequest struct {
 	IdempotencyKey string `json:"idempotencyKey"`
 	Message        string `json:"message"`
+	Model          string `json:"model"`
 }
 
 type conversationMessageDTO struct {
@@ -168,6 +185,7 @@ func (h *ConversationHandler) SubmitConversation(c *gin.Context) {
 		InvestigationID: investigationID,
 		Mode:            AgentModeChat,
 		Conversation:    conversation,
+		Model:           request.Model,
 	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

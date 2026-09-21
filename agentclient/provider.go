@@ -75,6 +75,7 @@ func (p *Provider) Respond(
 		Evidence:  &evidence,
 		Messages:  wireMessages(request.Conversation),
 		Tools:     ToolSpecs(),
+		Model:     request.Model,
 	})
 	if err != nil {
 		return controller.AgentResponse{}, err
@@ -130,11 +131,18 @@ func (p *Provider) continueTurn(
 		DatasetID:   opening.DatasetID,
 		Mode:        opening.Mode,
 		ToolResults: results,
+		// The continuation must run on the same model the turn opened with.
+		Model: opening.Model,
 	})
 	if !errors.Is(err, errSessionExpired) {
 		return reply, err
 	}
 	return p.transport.chat(ctx, opening)
+}
+
+// Models implements controller.AgentModelLister.
+func (p *Provider) Models(ctx context.Context) ([]controller.AgentModel, error) {
+	return p.transport.models(ctx)
 }
 
 // resolveScope performs the turn's single authorization lookup.

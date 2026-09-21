@@ -41,6 +41,22 @@ export function CommandBar({ ui }: { ui: ChainTraceController }) {
             ? "Enter 執行 · Shift+Enter 換行"
             : "Enter 送出後會自動建立調查"}
         </span>
+        {ui.agentModels.length > 0 && (
+          <select
+            className="model-select"
+            aria-label="選擇模型"
+            value={ui.selectedModel}
+            onChange={(event) => ui.setSelectedModel(event.target.value)}
+            disabled={isBusy}
+          >
+            <option value="">預設模型</option>
+            {ui.agentModels.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.displayName}
+              </option>
+            ))}
+          </select>
+        )}
         <button
           className="send-button"
           type="submit"
