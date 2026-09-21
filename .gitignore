@@ -11,6 +11,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 agent/.env
+# 相容模型設定含 token，整個目錄的 JSON 都不 commit；格式與範例在 agent/llm/config/README.md
+agent/llm/config/*.json
 
 # Scratch notes and ad-hoc API probes. api.txt in particular has held a live
 # provider key pasted from the Gemini console — it must never be committed.

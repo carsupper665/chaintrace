@@ -5,12 +5,13 @@
 
 import os
 
-from .base import LLM
+from .base import LLM, BaseLLM
 from .fake import FakeLLM
 from .types import LLMError, Message, Reply, StopReason, ToolCall, ToolSpec, Usage
 
 __all__ = [
     "LLM",
+    "BaseLLM",
     "FakeLLM",
     "LLMError",
     "Message",
