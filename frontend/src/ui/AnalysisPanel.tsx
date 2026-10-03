@@ -164,6 +164,12 @@ export function AnalysisPanel({
       cancelled = true;
     };
   }, [ui.transactionGraph?.datasetId]);
+  useEffect(() => {
+    // Dense graphs are unreadable when every transfer date and wallet label is
+    // painted at once. Select compact mode as new pages cross the threshold;
+    // the Owner can still switch back to the complete view afterwards.
+    if (graphNodes.length > 18) setIsCompactGraph(true);
+  }, [graphNodes.length]);
   useEffect(
     () => () => {
       if (copyFeedbackTimer.current) clearTimeout(copyFeedbackTimer.current);
@@ -741,7 +747,9 @@ export function AnalysisPanel({
         )}
         <div
           ref={graphCanvasRef}
-          className={`graph-canvas ${ui.isGraphDragging ? "dragging" : ""}`}
+          className={`graph-canvas ${ui.isGraphDragging ? "dragging" : ""} ${
+            isCompactGraph ? "compact-labels" : ""
+          }`}
           aria-label="可拖曳與縮放的交易關係圖"
           tabIndex={0}
           onKeyDown={(event) => {

@@ -2316,6 +2316,25 @@ button {
   color: #65736b;
   font-size: 8px;
   white-space: nowrap;
+  transition:
+    opacity 140ms ease,
+    color 140ms ease,
+    background 140ms ease;
+}
+
+.graph-canvas.compact-labels .graph-node:not(.focus):not(.selected) small {
+  opacity: 0;
+}
+
+.graph-canvas.compact-labels .graph-node:hover small,
+.graph-canvas.compact-labels .graph-node:focus-visible small,
+.graph-canvas.compact-labels .graph-node.selected small,
+.graph-canvas.compact-labels .graph-node.focus small {
+  z-index: 4;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(11, 16, 13, 0.92);
+  opacity: 1;
 }
 
 .graph-node.focus > span {
@@ -3739,6 +3758,13 @@ button {
 .theme-light .graph-node small,
 .theme-light .graph-legend {
   color: #69726c;
+}
+
+.theme-light .graph-canvas.compact-labels .graph-node:hover small,
+.theme-light .graph-canvas.compact-labels .graph-node:focus-visible small,
+.theme-light .graph-canvas.compact-labels .graph-node.selected small,
+.theme-light .graph-canvas.compact-labels .graph-node.focus small {
+  background: rgba(255, 255, 255, 0.94);
 }
 
 .theme-light .graph-card.graph-fullscreen .graph-node > span {
