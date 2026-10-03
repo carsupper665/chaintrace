@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { investigationSuggestions } from "@/src/models/chaintraceData";
 import { getRiskTone } from "@/src/utils/riskTone";
 import type { ChainTraceController } from "@/src/hooks/useChainTrace";
@@ -22,8 +23,15 @@ function conversationContent(message: {
 }
 
 export function AgentPanel({ ui }: { ui: ChainTraceController }) {
-  const active = ui.active;
-  if (!active) return null;
+  if (!ui.active) return null;
+  return <ActiveAgentPanel ui={ui} />;
+}
+
+function ActiveAgentPanel({ ui }: { ui: ChainTraceController }) {
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const followsLatestRef = useRef(true);
+  const [isAwayFromLatest, setIsAwayFromLatest] = useState(false);
+  const active = ui.active!;
   const currentResult = ui.currentAnalysisResult;
   const assessment = currentResult?.assessment;
   const risk = currentResult
@@ -62,6 +70,45 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
           ? "重新分析"
           : "開始分析";
 
+  const hasConversationActivity =
+    ui.chatMessages.length > 0 || Boolean(ui.streamingReply);
+
+  function updateLatestPosition(element: HTMLDivElement) {
+    const distanceFromBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
+    const away = distanceFromBottom > 72;
+    followsLatestRef.current = !away;
+    setIsAwayFromLatest(away);
+  }
+
+  function scrollToLatest() {
+    const element = contentRef.current;
+    if (!element) return;
+    followsLatestRef.current = true;
+    setIsAwayFromLatest(false);
+    element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+  }
+
+  useEffect(() => {
+    if (!followsLatestRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const element = contentRef.current;
+      if (!element) return;
+      element.scrollTo({ top: element.scrollHeight });
+      updateLatestPosition(element);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    ui.chatMessages.length,
+    ui.streamingReply?.text,
+    ui.streamingReply?.thinking,
+  ]);
+
+  useEffect(() => {
+    followsLatestRef.current = true;
+    setIsAwayFromLatest(false);
+  }, [active.id]);
+
   return (
     <section className="agent-panel">
       <header className="topbar">
@@ -87,7 +134,11 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
         </div>
       </header>
 
-      <div className="agent-content">
+      <div
+        ref={contentRef}
+        className="agent-content"
+        onScroll={(event) => updateLatestPosition(event.currentTarget)}
+      >
         <div className="case-summary">
           <form
             className="address-block address-entry"
@@ -346,7 +397,14 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
                       )}
                       <p>
                         {ui.streamingReply.text || (
-                          <span className="chat-waiting">等待回覆…</span>
+                          <span className="chat-waiting" role="status">
+                            <span>AI 正在回應</span>
+                            <span className="chat-waiting-dots" aria-hidden="true">
+                              <i />
+                              <i />
+                              <i />
+                            </span>
+                          </span>
                         )}
                       </p>
                     </div>
@@ -370,6 +428,26 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
           )}
         </section>
       </div>
+
+      {hasConversationActivity && isAwayFromLatest && (
+        <button
+          type="button"
+          className={`scroll-to-latest ${ui.streamingReply ? "responding" : ""}`}
+          onClick={scrollToLatest}
+          aria-label={ui.streamingReply ? "回到正在產生的回覆" : "回到最新訊息"}
+          title={ui.streamingReply ? "回到正在產生的回覆" : "回到最新訊息"}
+        >
+          {ui.streamingReply ? (
+            <span className="scroll-to-latest-dots" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+          ) : (
+            <span className="scroll-to-latest-arrow" aria-hidden="true">↓</span>
+          )}
+        </button>
+      )}
 
       <CommandBar ui={ui} />
     </section>

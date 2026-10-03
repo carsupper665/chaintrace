@@ -705,7 +705,8 @@ button {
   min-height: 0;
   flex: 1;
   overflow: auto;
-  padding: 22px 30px 126px;
+  padding: 22px 30px 24px;
+  scroll-padding-bottom: 24px;
 }
 
 .case-summary {
@@ -1274,8 +1275,34 @@ button {
 }
 
 .chat-waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   color: var(--muted);
-  font-style: italic;
+}
+
+.chat-waiting-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 12px;
+}
+
+.chat-waiting-dots i {
+  width: 4px;
+  height: 4px;
+  display: block;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: chatWaitingDot 1.15s ease-in-out infinite;
+}
+
+.chat-waiting-dots i:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.chat-waiting-dots i:nth-child(3) {
+  animation-delay: 0.28s;
 }
 
 .chat-thinking {
@@ -1444,11 +1471,10 @@ button {
 }
 
 .command-bar {
-  position: absolute;
+  position: relative;
   z-index: 5;
-  right: 30px;
-  bottom: 22px;
-  left: 30px;
+  flex: none;
+  margin: 0 30px 22px;
   min-height: 76px;
   display: flex;
   align-items: flex-start;
@@ -1459,6 +1485,59 @@ button {
   background: rgba(20, 28, 24, 0.93);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(18px);
+}
+
+.scroll-to-latest {
+  position: absolute;
+  z-index: 7;
+  bottom: 112px;
+  left: 50%;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgba(20, 28, 24, 0.96);
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+  transform: translateX(-50%);
+  backdrop-filter: blur(14px);
+}
+
+.scroll-to-latest:hover {
+  border-color: rgba(117, 242, 176, 0.36);
+  color: var(--accent);
+}
+
+.scroll-to-latest-arrow {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.scroll-to-latest-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.scroll-to-latest-dots i {
+  width: 4px;
+  height: 4px;
+  display: block;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: chatWaitingDot 1.15s ease-in-out infinite;
+}
+
+.scroll-to-latest-dots i:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.scroll-to-latest-dots i:nth-child(3) {
+  animation-delay: 0.28s;
 }
 
 .command-bar > button {
@@ -3605,6 +3684,13 @@ button {
   box-shadow: 0 18px 55px rgba(28, 38, 32, 0.12);
 }
 
+.theme-light .scroll-to-latest {
+  border-color: rgba(22, 140, 85, 0.2);
+  background: rgba(255, 255, 255, 0.96);
+  color: #344139;
+  box-shadow: 0 8px 24px rgba(35, 54, 44, 0.14);
+}
+
 .theme-light .command-bar textarea {
   color: #202622;
 }
@@ -3936,6 +4022,20 @@ button {
   }
 }
 
+@keyframes chatWaitingDot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+
+  30% {
+    opacity: 1;
+    transform: translateY(-4px);
+  }
+}
+
 @keyframes edgeIn {
   from {
     opacity: 0;
@@ -4034,7 +4134,7 @@ button {
   }
 
   .agent-content {
-    padding: 18px 18px 125px;
+    padding: 18px 18px 24px;
   }
 
   .case-summary {
@@ -4094,8 +4194,8 @@ button {
   }
 
   .command-bar {
-    right: 18px;
-    left: 18px;
+    margin-right: 18px;
+    margin-left: 18px;
   }
 
   .command-meta > span {
