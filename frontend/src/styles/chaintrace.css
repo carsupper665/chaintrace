@@ -710,7 +710,7 @@ button {
 
 .case-summary {
   display: grid;
-  grid-template-columns: minmax(220px, 2fr) repeat(4, minmax(72px, 0.7fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border: 1px solid var(--line);
   border-radius: 11px;
   background: rgba(255, 255, 255, 0.018);
@@ -875,9 +875,11 @@ button {
 }
 
 .address-entry {
+  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
+  column-gap: clamp(16px, 3vw, 42px);
 }
 
 .address-entry > div {
@@ -915,6 +917,7 @@ button {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
+  margin-left: auto;
 }
 
 .target-actions button {
