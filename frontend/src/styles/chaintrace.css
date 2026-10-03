@@ -1162,12 +1162,13 @@ button {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin: 9px 0 12px 61px;
 }
 
 .summary-actions small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
+  line-height: 1.6;
 }
 
 .generate-summary-button {
@@ -4070,6 +4071,10 @@ button {
 
   .conversation {
     margin-top: 34px;
+  }
+
+  .summary-actions {
+    margin-left: 0;
   }
 
   .suggestion-grid,

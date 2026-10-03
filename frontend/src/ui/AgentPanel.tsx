@@ -255,6 +255,11 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
           </div>
 
           <div className="summary-actions">
+            <small>
+              {hasStableResult
+                ? "摘要依目前分析結果產生，同一份結果只會產生一次。"
+                : "完成一次分析後才能產生摘要。"}
+            </small>
             <button
               type="button"
               className="generate-summary-button"
@@ -273,11 +278,6 @@ export function AgentPanel({ ui }: { ui: ChainTraceController }) {
             >
               {ui.isSummarizing ? "產生摘要中…" : "產生調查摘要"}
             </button>
-            <small>
-              {hasStableResult
-                ? "摘要依目前分析結果產生，同一份結果只會產生一次。"
-                : "完成一次分析後才能產生摘要。"}
-            </small>
           </div>
 
           {ui.summaryNotice && (
