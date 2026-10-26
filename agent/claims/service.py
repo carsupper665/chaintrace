@@ -26,7 +26,9 @@ CLAIM_SCHEMA: dict[str, Any] = {
         "network": {"type": "string", "const": "tron"},
         "claims": {
             "type": "array",
-            "minItems": 1,
+            # Zero claims is allowed so a blank screenshot fails closed as
+            # no_claim instead of forcing the model to invent an address.
+            "minItems": 0,
             "maxItems": 1,
             "items": {
                 "type": "object",
@@ -83,8 +85,10 @@ def _parse_reply(reply: Reply) -> ExtractClaimsResponse:
         parsed = ExtractClaimsResponse.model_validate(raw)
     except Exception as error:  # noqa: BLE001 - pydantic 細節不外洩給呼叫端
         raise ExtractError("malformed_claims", "extract reply failed schema validation") from error
+    if len(parsed.claims) == 0:
+        raise ExtractError("no_claim", "screenshot contained no extractable address claim")
     if len(parsed.claims) != 1:
-        raise ExtractError("malformed_claims", "extract must return exactly one claim")
+        raise ExtractError("malformed_claims", "extract must return at most one claim")
     claim = parsed.claims[0]
     if claim.kind != "address" or not is_valid_tron_address(claim.value):
         raise ExtractError("invalid_claim_address", "extracted address failed Base58Check")

@@ -3,7 +3,6 @@ package router_test
 import (
 	"bytes"
 	"chaintrace/analysis"
-	"chaintrace/claimclient"
 	"chaintrace/controller"
 	apiRouter "chaintrace/router"
 	"context"
@@ -27,13 +26,13 @@ var claimTestPNG = []byte{
 }
 
 type fixtureClaimExtractor struct {
-	result claimclient.ExtractResult
+	result controller.ClaimExtractResult
 	err    error
 	calls  int
 	last   []byte
 }
 
-func (f *fixtureClaimExtractor) ExtractPNG(_ context.Context, image []byte) (claimclient.ExtractResult, error) {
+func (f *fixtureClaimExtractor) ExtractPNG(_ context.Context, image []byte) (controller.ClaimExtractResult, error) {
 	f.calls++
 	f.last = append([]byte(nil), image...)
 	return f.result, f.err
@@ -42,9 +41,9 @@ func (f *fixtureClaimExtractor) ExtractPNG(_ context.Context, image []byte) (cla
 func TestUnauthenticatedClaimExtractIsRejectedBeforeAgent(t *testing.T) {
 	test := newAuthHTTPTest(t)
 	extractor := &fixtureClaimExtractor{
-		result: claimclient.ExtractResult{
+		result: controller.ClaimExtractResult{
 			Network: "tron",
-			Claims: []claimclient.AddressClaim{{
+			Claims: []controller.AddressClaim{{
 				Kind: "address", Value: testTargetAddress, Role: "to", Confidence: 0.9,
 			}},
 		},
@@ -66,9 +65,9 @@ func TestUnauthenticatedClaimExtractIsRejectedBeforeAgent(t *testing.T) {
 func TestOwnerCanExtractPendingAddressClaimFromPNG(t *testing.T) {
 	test := newAuthHTTPTest(t)
 	extractor := &fixtureClaimExtractor{
-		result: claimclient.ExtractResult{
+		result: controller.ClaimExtractResult{
 			Network: "tron",
-			Claims: []claimclient.AddressClaim{{
+			Claims: []controller.AddressClaim{{
 				Kind: "address", Value: "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj",
 				Role: "to", Confidence: 0.92,
 			}},
@@ -113,9 +112,9 @@ func TestOwnerCanExtractPendingAddressClaimFromPNG(t *testing.T) {
 func TestExtractRejectsInvalidClaimAddressFromAgent(t *testing.T) {
 	test := newAuthHTTPTest(t)
 	extractor := &fixtureClaimExtractor{
-		result: claimclient.ExtractResult{
+		result: controller.ClaimExtractResult{
 			Network: "tron",
-			Claims: []claimclient.AddressClaim{{
+			Claims: []controller.AddressClaim{{
 				Kind: "address", Value: "not-valid", Role: "to", Confidence: 0.5,
 			}},
 		},
@@ -129,6 +128,24 @@ func TestExtractRejectsInvalidClaimAddressFromAgent(t *testing.T) {
 		t.Fatalf("status = %d; body: %s", response.Code, response.Body.String())
 	}
 	assertErrorCode(t, response, "invalid_claim_address")
+}
+
+func TestExtractRejectsOversizedMultipartBeforeAgent(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	extractor := &fixtureClaimExtractor{}
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{}, extractor)
+	token := ownerToken(t, test.owner.ID)
+
+	oversized := bytes.Repeat([]byte("a"), (5<<20)+128<<10)
+	response := multipartClaimExtract(t, test, token, oversized)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; body: %s", response.Code, response.Body.String())
+	}
+	assertErrorCode(t, response, "image_too_large")
+	if extractor.calls != 0 {
+		t.Fatalf("extractor calls = %d, want 0 for oversized body", extractor.calls)
+	}
 }
 
 func TestVerifyAddressReportsActivityFromProvider(t *testing.T) {
@@ -160,9 +177,9 @@ func TestClaimExtractThenVerifyThenCreateInvestigation(t *testing.T) {
 	test := newAuthHTTPTest(t)
 	cutoff := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
 	extractor := &fixtureClaimExtractor{
-		result: claimclient.ExtractResult{
+		result: controller.ClaimExtractResult{
 			Network: "tron",
-			Claims: []claimclient.AddressClaim{{
+			Claims: []controller.AddressClaim{{
 				Kind: "address", Value: testTargetAddress, Role: "to", Confidence: 0.88,
 			}},
 		},

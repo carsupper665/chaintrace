@@ -99,6 +99,13 @@ def test_extract_rejects_invalid_tron_address(monkeypatch):
     assert response.json()["code"] == "invalid_claim_address"
 
 
+def test_extract_rejects_empty_claims_as_no_claim(monkeypatch):
+    client, _ = build([Reply(text=json.dumps({"network": "tron", "claims": []}))], monkeypatch)
+    response = client.post("/v1/extract-claims", json=png_payload(), headers=HEADERS)
+    assert response.status_code == 400
+    assert response.json()["code"] == "no_claim"
+
+
 def test_extract_rejects_non_png_bytes(monkeypatch):
     client, _ = build([claim_reply()], monkeypatch)
     response = client.post(

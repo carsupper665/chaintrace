@@ -4,8 +4,8 @@
 - 不要請求或使用任何工具。
 - 只輸出符合 JSON Schema 的物件。
 - network 固定為 "tron"。
-- 這次只要一個 address Claim：kind 必須是 "address"。
+- 最多一個 address Claim：kind 必須是 "address"。
 - value 必須是看起來像 TRON Base58Check 的地址字串。
 - role 只能是 from、to 或 unknown。
 - confidence 是 0 到 1 之間的數字。
-- 沒有可抽取的地址時不要編造；讓呼叫端判定抽取失敗。
+- 沒有可抽取的地址時回傳 `"claims": []`，絕對不要編造地址。

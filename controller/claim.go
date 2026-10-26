@@ -5,23 +5,51 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"chaintrace/analysis"
-	"chaintrace/claimclient"
 
 	"github.com/gin-gonic/gin"
 )
 
 const (
 	maximumClaimUploadBytes = 5 << 20
-	pngMagic                = "\x89PNG\r\n\x1a\n"
+	// multipartOverhead covers boundary lines and the image field headers so
+	// MaxBytesReader can reject the whole request before Gin buffers it.
+	multipartOverhead = 64 << 10
+	pngMagic          = "\x89PNG\r\n\x1a\n"
 )
 
+// AddressClaim is one unverified address assertion extracted from a screenshot.
+type AddressClaim struct {
+	Kind       string
+	Value      string
+	Role       string
+	Confidence float64
+}
+
+// ClaimExtractResult is the neutral extract outcome at the ClaimExtractor seam.
+type ClaimExtractResult struct {
+	Network string
+	Claims  []AddressClaim
+}
+
+// ClaimExtractError is a machine-readable failure from the extract seam.
+type ClaimExtractError struct {
+	Code    string
+	Message string
+	Status  int
+}
+
+func (e *ClaimExtractError) Error() string {
+	return e.Code + ": " + e.Message
+}
+
 // ClaimExtractor turns screenshot bytes into a pending address Claim.
-// The production implementation is claimclient.Client; HTTP tests inject a fake.
+// The production implementation adapts claimclient.Client; HTTP tests inject a fake.
 type ClaimExtractor interface {
-	ExtractPNG(ctx context.Context, image []byte) (claimclient.ExtractResult, error)
+	ExtractPNG(ctx context.Context, image []byte) (ClaimExtractResult, error)
 }
 
 // ClaimHandler owns the authenticated extract and address-activity routes.
@@ -43,8 +71,17 @@ func (h *ClaimHandler) Extract(c *gin.Context) {
 		})
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(
+		c.Writer, c.Request.Body, maximumClaimUploadBytes+multipartOverhead,
+	)
 	file, err := c.FormFile("image")
 	if err != nil {
+		if isRequestBodyTooLarge(err) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code": "image_too_large", "message": "image exceeds size limit",
+			})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code": "validation_error", "message": "image file is required",
 		})
@@ -87,7 +124,7 @@ func (h *ClaimHandler) Extract(c *gin.Context) {
 
 	result, err := h.extractor.ExtractPNG(c.Request.Context(), image)
 	if err != nil {
-		var extractErr *claimclient.ExtractError
+		var extractErr *ClaimExtractError
 		if errors.As(err, &extractErr) {
 			status := http.StatusBadRequest
 			if extractErr.Status >= 500 {
@@ -209,4 +246,15 @@ func addressHasTransferActivity(page analysis.AddressTransferPage) bool {
 		}
 	}
 	return false
+}
+
+func isRequestBodyTooLarge(err error) bool {
+	if err == nil {
+		return false
+	}
+	var maxBytesError *http.MaxBytesError
+	if errors.As(err, &maxBytesError) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "request body too large")
 }

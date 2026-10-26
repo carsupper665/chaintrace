@@ -1,6 +1,9 @@
 package router
 
 import (
+	"context"
+	"errors"
+
 	"chaintrace/agentclient"
 	"chaintrace/analysis"
 	"chaintrace/claimclient"
@@ -99,6 +102,7 @@ func productionLearnedScorer() analysis.LearnedScorer {
 
 // productionClaimExtractor returns a nil interface when the sidecar is not
 // configured, matching productionAgentProvider / productionLearnedScorer.
+// claimclient stays an HTTP adapter; the controller seam uses neutral DTOs.
 func productionClaimExtractor() controller.ClaimExtractor {
 	client := claimclient.New(
 		utils.GetEnvString("AGENT_BASE_URL", ""),
@@ -107,7 +111,33 @@ func productionClaimExtractor() controller.ClaimExtractor {
 	if client == nil {
 		return nil
 	}
-	return client
+	return claimClientAdapter{client: client}
+}
+
+type claimClientAdapter struct {
+	client *claimclient.Client
+}
+
+func (a claimClientAdapter) ExtractPNG(
+	ctx context.Context, image []byte,
+) (controller.ClaimExtractResult, error) {
+	result, err := a.client.ExtractPNG(ctx, image)
+	if err != nil {
+		var extractErr *claimclient.ExtractError
+		if errors.As(err, &extractErr) {
+			return controller.ClaimExtractResult{}, &controller.ClaimExtractError{
+				Code: extractErr.Code, Message: extractErr.Message, Status: extractErr.Status,
+			}
+		}
+		return controller.ClaimExtractResult{}, err
+	}
+	claims := make([]controller.AddressClaim, len(result.Claims))
+	for index, claim := range result.Claims {
+		claims[index] = controller.AddressClaim{
+			Kind: claim.Kind, Value: claim.Value, Role: claim.Role, Confidence: claim.Confidence,
+		}
+	}
+	return controller.ClaimExtractResult{Network: result.Network, Claims: claims}, nil
 }
 
 func ProductionLimits() Limits {

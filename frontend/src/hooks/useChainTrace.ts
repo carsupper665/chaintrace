@@ -6,15 +6,18 @@ import {
   getAgentModels,
 } from "@/src/middle/conversation-client";
 import type { AgentModel } from "@/src/middle/conversation-contract";
-import type {
-  AnalysisFlowResult,
-  PendingAddressClaim,
-} from "@/src/middle/investigation-client";
+import type { PendingAddressClaim } from "@/src/middle/claim-contract";
+import {
+  ClaimClientError,
+  extractClaimsFromPng,
+  shouldApplyClaimResult,
+  verifyClaimAddress,
+} from "@/src/middle/claim-client";
+import type { AnalysisFlowResult } from "@/src/middle/investigation-client";
 import {
   AnalysisRunClientError,
   createAnalysisRunner,
   createInvestigation as createInvestigationRecord,
-  extractClaimsFromPng,
   filterInvestigations,
   getCurrentAnalysisResult,
   getInvestigation,
@@ -24,7 +27,6 @@ import {
   reloadStableAnalysis,
   renameInvestigation as renameInvestigationRecord,
   setInvestigationTarget,
-  verifyClaimAddress,
 } from "@/src/middle/investigation-client";
 import type {
   AnalysisScope,
@@ -189,6 +191,11 @@ export function useChainTrace() {
   const analysisAttempt = useRef(0);
   const conversationAttempt = useRef(0);
   const selectAttempt = useRef(0);
+  const claimRequestGeneration = useRef(0);
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const pendingClaimValueRef = useRef<string | null>(null);
+  pendingClaimValueRef.current = pendingClaim?.value ?? null;
   const exportInProgress = useRef(false);
 
   const active =
@@ -748,33 +755,74 @@ export function useChainTrace() {
 
   async function extractClaimFromScreenshot(file: File) {
     if (!active || active.targetLocked || isClaimExtracting) return;
+    const requestInvestigationId = active.id;
+    const requestGeneration = ++claimRequestGeneration.current;
     setClaimError("");
     setClaimMessage("");
     setPendingClaim(null);
     setIsClaimExtracting(true);
     try {
       const result = await extractClaimsFromPng(file);
+      if (
+        !shouldApplyClaimResult({
+          requestInvestigationId,
+          activeInvestigationId: activeIdRef.current,
+          requestGeneration,
+          currentGeneration: claimRequestGeneration.current,
+        })
+      ) {
+        return;
+      }
       const claim = result.claims[0];
       setPendingClaim({ ...claim, status: "unverified" });
       setClaimMessage("已抽出待驗證地址 Claim；請確認後再驗證鏈上活動。");
     } catch (error) {
+      if (
+        !shouldApplyClaimResult({
+          requestInvestigationId,
+          activeInvestigationId: activeIdRef.current,
+          requestGeneration,
+          currentGeneration: claimRequestGeneration.current,
+        })
+      ) {
+        return;
+      }
       setClaimError(
-        error instanceof InvestigationClientError
+        error instanceof ClaimClientError
           ? error.message
           : "無法從截圖抽出地址，請稍後再試。",
       );
     } finally {
-      setIsClaimExtracting(false);
+      if (requestGeneration === claimRequestGeneration.current) {
+        setIsClaimExtracting(false);
+      }
     }
   }
 
   async function verifyPendingClaim() {
-    if (!pendingClaim || isClaimVerifying || active?.targetLocked) return;
+    if (!pendingClaim || isClaimVerifying || active?.targetLocked || !active) {
+      return;
+    }
+    const requestInvestigationId = active.id;
+    const requestClaimValue = pendingClaim.value;
+    const requestGeneration = ++claimRequestGeneration.current;
     setClaimError("");
     setClaimMessage("");
     setIsClaimVerifying(true);
     try {
-      const result = await verifyClaimAddress(pendingClaim.value);
+      const result = await verifyClaimAddress(requestClaimValue);
+      if (
+        !shouldApplyClaimResult({
+          requestInvestigationId,
+          activeInvestigationId: activeIdRef.current,
+          requestGeneration,
+          currentGeneration: claimRequestGeneration.current,
+          requestClaimValue,
+          activeClaimValue: pendingClaimValueRef.current,
+        })
+      ) {
+        return;
+      }
       if (result.status === "verified") {
         setPendingClaim({ ...pendingClaim, status: "verified" });
         setAddressDraft(result.address);
@@ -786,20 +834,37 @@ export function useChainTrace() {
       setPendingClaim({ ...pendingClaim, status: "no_activity" });
       setClaimMessage("此地址目前沒有可用的鏈上 USDT 活動，不能預填調查目標。");
     } catch (error) {
+      if (
+        !shouldApplyClaimResult({
+          requestInvestigationId,
+          activeInvestigationId: activeIdRef.current,
+          requestGeneration,
+          currentGeneration: claimRequestGeneration.current,
+          requestClaimValue,
+          activeClaimValue: pendingClaimValueRef.current,
+        })
+      ) {
+        return;
+      }
       setClaimError(
-        error instanceof InvestigationClientError
+        error instanceof ClaimClientError
           ? error.message
           : "無法驗證地址活動，請稍後再試。",
       );
     } finally {
-      setIsClaimVerifying(false);
+      if (requestGeneration === claimRequestGeneration.current) {
+        setIsClaimVerifying(false);
+      }
     }
   }
 
   function clearPendingClaim() {
+    claimRequestGeneration.current += 1;
     setPendingClaim(null);
     setClaimError("");
     setClaimMessage("");
+    setIsClaimExtracting(false);
+    setIsClaimVerifying(false);
   }
 
   async function expandGraphNode(nodeId: string) {
@@ -935,9 +1000,12 @@ export function useChainTrace() {
     setGraphHistoryDepth(0);
     setActiveId(nextInvestigation.id);
     setAddressDraft(saved?.addressDraft ?? nextInvestigation.address ?? "");
+    claimRequestGeneration.current += 1;
     setPendingClaim(null);
     setClaimError("");
     setClaimMessage("");
+    setIsClaimExtracting(false);
+    setIsClaimVerifying(false);
     setTransactionGraph(null);
     setSelectedNodeId(null);
     setExpandedNodeIds(new Set());
