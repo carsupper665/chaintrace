@@ -105,6 +105,10 @@ type TRC20Transfer struct {
 type ChainDataProvider interface {
 	CaptureConfirmedCutoff(context.Context, string) (BlockCutoff, error)
 	FetchAddressTransfers(context.Context, AddressTransferPageRequest) (AddressTransferPage, error)
+	// LookupConfirmedUSDTTransaction loads one Blockchain Transaction by hash and
+	// its successful confirmed TRC20 USDT Transfers. found=false means the hash
+	// does not identify a known transaction.
+	LookupConfirmedUSDTTransaction(ctx context.Context, hash string) (tx BlockchainTransaction, found bool, err error)
 }
 
 type EvaluationInput struct {

@@ -21,11 +21,12 @@ const (
 	extractTimeout         = 30 * time.Second
 )
 
-// AddressClaim is one unverified address assertion from a screenshot.
+// AddressClaim is one unverified structured assertion from a screenshot.
 type AddressClaim struct {
 	Kind       string  `json:"kind"`
 	Value      string  `json:"value"`
-	Role       string  `json:"role"`
+	Role       string  `json:"role,omitempty"`
+	Asset      string  `json:"asset,omitempty"`
 	Confidence float64 `json:"confidence"`
 }
 
@@ -110,8 +111,8 @@ func decodeExtractResponse(status int, raw []byte) (ExtractResult, error) {
 		if err := json.Unmarshal(raw, &reply); err != nil {
 			return ExtractResult{}, fmt.Errorf("extract returned malformed JSON: %w", err)
 		}
-		if reply.Network != "tron" || len(reply.Claims) != 1 {
-			return ExtractResult{}, errors.New("extract reply is not a single tron address claim")
+		if reply.Network != "tron" || len(reply.Claims) == 0 || len(reply.Claims) > 10 {
+			return ExtractResult{}, errors.New("extract reply is not a bounded tron claim set")
 		}
 		return reply, nil
 	}

@@ -209,7 +209,7 @@ function ActiveAgentPanel({ ui }: { ui: ChainTraceController }) {
               <input
                 id="claim-screenshot"
                 type="file"
-                accept="image/png"
+                accept="image/png,image/jpeg,image/webp"
                 disabled={ui.isClaimExtracting || ui.isGraphLoading}
                 onChange={(event) => {
                   const file = event.target.files?.[0];
@@ -217,32 +217,106 @@ function ActiveAgentPanel({ ui }: { ui: ChainTraceController }) {
                   if (file) void ui.extractClaimFromScreenshot(file);
                 }}
               />
-              <p className="claim-hint">上傳含單一 TRON 地址的 PNG；結果為待驗證 Claim，不是 Agent Evidence。</p>
-              {ui.pendingClaim && (
-                <div className="claim-pending" role="status">
-                  <div>
-                    <strong>待驗證地址</strong>
-                    <code>{ui.pendingClaim.value}</code>
-                    <span>
-                      {ui.pendingClaim.role} · confidence{" "}
-                      {ui.pendingClaim.confidence.toFixed(2)} ·{" "}
-                      {ui.pendingClaim.status === "unverified"
-                        ? "待驗證"
-                        : ui.pendingClaim.status === "verified"
-                          ? "已驗證"
-                          : "無鏈上活動"}
-                    </span>
-                  </div>
+              <p className="claim-hint">
+                上傳含 TRON 地址／交易／金額的 PNG、JPEG 或 WebP；結果為待驗證
+                Claim，不是 Agent Evidence。
+              </p>
+              {ui.claimPreviewUrl && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  className="claim-preview"
+                  src={ui.claimPreviewUrl}
+                  alt="上傳截圖預覽"
+                />
+              )}
+              {ui.pendingClaims.length > 0 && (
+                <div className="claim-list" role="status">
+                  <strong>待驗證 Claim</strong>
+                  <ul>
+                    {ui.pendingClaims.map((claim) => {
+                      const lowConfidence = claim.confidence < 0.7;
+                      const selected = claim.id === ui.selectedClaimId;
+                      const statusLabel =
+                        claim.status === "unverified"
+                          ? "待驗證"
+                          : claim.status === "verified"
+                            ? "已驗證"
+                            : claim.status === "no_activity"
+                              ? "無鏈上活動"
+                              : claim.status === "not_found"
+                                ? "找不到交易"
+                                : "不符";
+                      return (
+                        <li
+                          key={claim.id}
+                          className={`claim-item${selected ? " selected" : ""}`}
+                        >
+                          <div className="claim-item-meta">
+                            <span className="claim-kind">{claim.kind}</span>
+                            {claim.role ? <span>{claim.role}</span> : null}
+                            {claim.asset ? <span>{claim.asset}</span> : null}
+                            <span>
+                              confidence {claim.confidence.toFixed(2)}
+                            </span>
+                            <span>{statusLabel}</span>
+                            {lowConfidence ? (
+                              <span className="claim-low-confidence">
+                                低信心
+                              </span>
+                            ) : null}
+                          </div>
+                          <input
+                            type="text"
+                            value={claim.value}
+                            aria-label={`編輯 ${claim.kind} Claim`}
+                            onChange={(event) =>
+                              void ui.updatePendingClaim(
+                                claim.id,
+                                event.target.value,
+                              )
+                            }
+                          />
+                          {claim.actual?.amount != null && (
+                            <p className="claim-actual">
+                              鏈上金額{" "}
+                              <code>{String(claim.actual.amount)}</code>
+                            </p>
+                          )}
+                          <div className="claim-actions">
+                            {claim.kind === "address" && (
+                              <button
+                                type="button"
+                                onClick={() => ui.selectPendingClaim(claim.id)}
+                                disabled={selected}
+                              >
+                                {selected ? "已選為目標" : "選為目標候選"}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => ui.removePendingClaim(claim.id)}
+                            >
+                              刪除
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
                   <div className="claim-actions">
                     <button
                       type="button"
                       onClick={() => void ui.verifyPendingClaim()}
                       disabled={
                         ui.isClaimVerifying ||
-                        ui.pendingClaim.status === "verified"
+                        !ui.pendingClaims.some(
+                          (claim) =>
+                            claim.id === ui.selectedClaimId &&
+                            claim.kind === "address",
+                        )
                       }
                     >
-                      {ui.isClaimVerifying ? "驗證中…" : "驗證鏈上活動"}
+                      {ui.isClaimVerifying ? "驗證中…" : "驗證鏈上結果"}
                     </button>
                     <button type="button" onClick={ui.clearPendingClaim}>
                       清除

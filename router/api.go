@@ -131,10 +131,11 @@ func (a claimClientAdapter) ExtractPNG(
 		}
 		return controller.ClaimExtractResult{}, err
 	}
-	claims := make([]controller.AddressClaim, len(result.Claims))
+	claims := make([]controller.ExtractedClaim, len(result.Claims))
 	for index, claim := range result.Claims {
-		claims[index] = controller.AddressClaim{
-			Kind: claim.Kind, Value: claim.Value, Role: claim.Role, Confidence: claim.Confidence,
+		claims[index] = controller.ExtractedClaim{
+			Kind: claim.Kind, Value: claim.Value, Role: claim.Role,
+			Asset: claim.Asset, Confidence: claim.Confidence,
 		}
 	}
 	return controller.ClaimExtractResult{Network: result.Network, Claims: claims}, nil
@@ -213,6 +214,7 @@ func apiRouterWithOptions(
 		protected.GET("/agent/models", agentHandler.ListModels)
 		protected.POST("/claims/extract", claimHandler.Extract)
 		protected.POST("/claims/verify-address", claimHandler.VerifyAddress)
+		protected.POST("/claims/verify", claimHandler.VerifyClaims)
 	}
 	auth := router.Group("/Authentication", unauthenticated)
 	{

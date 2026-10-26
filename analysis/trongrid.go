@@ -131,6 +131,55 @@ func (p *TronGridProvider) CaptureConfirmedCutoff(ctx context.Context, network s
 	}, nil
 }
 
+func (p *TronGridProvider) LookupConfirmedUSDTTransaction(
+	ctx context.Context, hash string,
+) (BlockchainTransaction, bool, error) {
+	if !validTransactionHash(hash) {
+		return BlockchainTransaction{}, false, errors.New("invalid transaction hash")
+	}
+	body, err := json.Marshal(map[string]string{"value": hash})
+	if err != nil {
+		return BlockchainTransaction{}, false, err
+	}
+	var info tronGridTransactionInfo
+	if err := p.requestJSON(ctx, http.MethodPost, "/walletsolidity/gettransactioninfobyid", body, &info); err != nil {
+		return BlockchainTransaction{}, false, err
+	}
+	if info.ID == "" && info.BlockNumber == 0 && info.BlockTimestamp == 0 {
+		return BlockchainTransaction{}, false, nil
+	}
+	blockTime := time.UnixMilli(info.BlockTimestamp).UTC()
+	successful := info.ID == hash && info.BlockNumber > 0 && info.BlockTimestamp > 0 && info.Receipt.Result == "SUCCESS"
+	transfers := make([]TRC20Transfer, 0)
+	if successful {
+		for logIndex, log := range info.Logs {
+			from, to, amount, ok := decodeUSDTTransferLog(log.Address, log.Topics, log.Data)
+			if !ok {
+				continue
+			}
+			transfers = append(transfers, TRC20Transfer{
+				EventIdentity:      "log:" + strconv.Itoa(logIndex),
+				ContractAddress:    TRONMainnetUSDTContract,
+				Asset:              AssetUSDT,
+				FromAddress:        from,
+				ToAddress:          to,
+				AmountSmallestUnit: amount,
+				Decimals:           6,
+				Timestamp:          blockTime,
+			})
+		}
+	}
+	return BlockchainTransaction{
+		Network:        "TRON_MAINNET",
+		Hash:           hash,
+		BlockID:        strconv.FormatInt(info.BlockNumber, 10),
+		BlockTimestamp: blockTime,
+		Successful:     successful,
+		Confirmed:      successful,
+		Transfers:      transfers,
+	}, true, nil
+}
+
 func (p *TronGridProvider) FetchAddressTransfers(ctx context.Context, request AddressTransferPageRequest) (AddressTransferPage, error) {
 	if err := validateTronGridPageRequest(request); err != nil {
 		return AddressTransferPage{}, err

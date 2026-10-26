@@ -79,6 +79,17 @@ func (p *fixtureChainDataProvider) FetchAddressTransfers(ctx context.Context, re
 	return analysis.AddressTransferPage{Transactions: collection.Transactions}, nil
 }
 
+func (p *fixtureChainDataProvider) LookupConfirmedUSDTTransaction(
+	_ context.Context, hash string,
+) (analysis.BlockchainTransaction, bool, error) {
+	for _, transaction := range p.collection.Transactions {
+		if transaction.Hash == hash {
+			return transaction, true, nil
+		}
+	}
+	return analysis.BlockchainTransaction{}, false, nil
+}
+
 type fixtureRiskEvaluator struct {
 	result analysis.Evaluation
 	err    error

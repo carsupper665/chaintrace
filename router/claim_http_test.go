@@ -7,6 +7,9 @@ import (
 	apiRouter "chaintrace/router"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -43,7 +46,7 @@ func TestUnauthenticatedClaimExtractIsRejectedBeforeAgent(t *testing.T) {
 	extractor := &fixtureClaimExtractor{
 		result: controller.ClaimExtractResult{
 			Network: "tron",
-			Claims: []controller.AddressClaim{{
+			Claims: []controller.ExtractedClaim{{
 				Kind: "address", Value: testTargetAddress, Role: "to", Confidence: 0.9,
 			}},
 		},
@@ -67,7 +70,7 @@ func TestOwnerCanExtractPendingAddressClaimFromPNG(t *testing.T) {
 	extractor := &fixtureClaimExtractor{
 		result: controller.ClaimExtractResult{
 			Network: "tron",
-			Claims: []controller.AddressClaim{{
+			Claims: []controller.ExtractedClaim{{
 				Kind: "address", Value: "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj",
 				Role: "to", Confidence: 0.92,
 			}},
@@ -83,8 +86,8 @@ func TestOwnerCanExtractPendingAddressClaimFromPNG(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d; body: %s", response.Code, response.Body.String())
 	}
-	if extractor.calls != 1 || !bytes.Equal(extractor.last, claimTestPNG) {
-		t.Fatalf("extractor saw %#v calls=%d", extractor.last, extractor.calls)
+	if extractor.calls != 1 || len(extractor.last) < 8 || string(extractor.last[:8]) != "\x89PNG\r\n\x1a\n" {
+		t.Fatalf("extractor should receive sanitized PNG, got calls=%d last=%#v", extractor.calls, extractor.last)
 	}
 	var body struct {
 		Network string `json:"network"`
@@ -114,7 +117,7 @@ func TestExtractRejectsInvalidClaimAddressFromAgent(t *testing.T) {
 	extractor := &fixtureClaimExtractor{
 		result: controller.ClaimExtractResult{
 			Network: "tron",
-			Claims: []controller.AddressClaim{{
+			Claims: []controller.ExtractedClaim{{
 				Kind: "address", Value: "not-valid", Role: "to", Confidence: 0.5,
 			}},
 		},
@@ -179,7 +182,7 @@ func TestClaimExtractThenVerifyThenCreateInvestigation(t *testing.T) {
 	extractor := &fixtureClaimExtractor{
 		result: controller.ClaimExtractResult{
 			Network: "tron",
-			Claims: []controller.AddressClaim{{
+			Claims: []controller.ExtractedClaim{{
 				Kind: "address", Value: testTargetAddress, Role: "to", Confidence: 0.88,
 			}},
 		},
@@ -224,6 +227,294 @@ func TestClaimExtractThenVerifyThenCreateInvestigation(t *testing.T) {
 		t.Fatalf("confirm target status = %d; body: %s", confirmed.Code, confirmed.Body.String())
 	}
 	assertJSONField(t, confirmed.Body.Bytes(), "address", testTargetAddress)
+}
+
+func TestOwnerCanExtractJPEGAndRejectFakeMIME(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	extractor := &fixtureClaimExtractor{
+		result: controller.ClaimExtractResult{
+			Network: "tron",
+			Claims: []controller.ExtractedClaim{{
+				Kind: "address", Value: testTargetAddress, Role: "to", Confidence: 0.9,
+			}},
+		},
+	}
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{}, extractor)
+	token := ownerToken(t, test.owner.ID)
+
+	jpegBytes := encodeClaimTestJPEG(t)
+	ok := multipartClaimExtractNamed(t, test, token, jpegBytes, "shot.jpg")
+	if ok.Code != http.StatusOK {
+		t.Fatalf("jpeg extract status = %d; body: %s", ok.Code, ok.Body.String())
+	}
+	if extractor.calls != 1 || len(extractor.last) < 8 || string(extractor.last[:8]) != "\x89PNG\r\n\x1a\n" {
+		t.Fatalf("extractor should receive re-encoded PNG, got calls=%d len=%d", extractor.calls, len(extractor.last))
+	}
+
+	extractor.calls = 0
+	fake := multipartClaimExtractNamed(t, test, token, []byte("GIF89a-not-image"), "shot.png")
+	if fake.Code != http.StatusBadRequest {
+		t.Fatalf("fake mime status = %d; body: %s", fake.Code, fake.Body.String())
+	}
+	assertErrorCode(t, fake, "unsupported_media")
+	if extractor.calls != 0 {
+		t.Fatalf("extractor calls = %d, want 0 for unsupported media", extractor.calls)
+	}
+}
+
+func TestVerifyClaimsMatchesConfirmedUSDTTransfer(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	cutoff := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
+	provider := successfulProvider(cutoff)
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{Provider: provider}, nil)
+	token := ownerToken(t, test.owner.ID)
+	txHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	verified := test.request(http.MethodPost, "/api/v1/claims/verify", map[string]any{
+		"selectedAddress": testPeerAddress,
+		"claims": []map[string]any{
+			{"kind": "tx_hash", "value": txHash, "confidence": 0.9},
+			{"kind": "address", "value": testTargetAddress, "role": "from", "confidence": 0.9},
+			{"kind": "address", "value": testPeerAddress, "role": "to", "confidence": 0.9},
+			{"kind": "amount", "value": testLargeAmount, "asset": "USDT", "confidence": 0.9},
+		},
+	}, token)
+	if verified.Code != http.StatusOK {
+		t.Fatalf("verify status = %d; body: %s", verified.Code, verified.Body.String())
+	}
+	var body struct {
+		PrefillAddress string `json:"prefillAddress"`
+		Results        []struct {
+			Kind   string `json:"kind"`
+			Value  string `json:"value"`
+			Status string `json:"status"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(verified.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.PrefillAddress != testPeerAddress {
+		t.Fatalf("prefill = %q", body.PrefillAddress)
+	}
+	for _, result := range body.Results {
+		if result.Status != "verified" {
+			t.Fatalf("result = %#v", result)
+		}
+	}
+
+	missing := test.request(http.MethodPost, "/api/v1/claims/verify", map[string]any{
+		"selectedAddress": testPeerAddress,
+		"claims": []map[string]any{
+			{"kind": "tx_hash", "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "confidence": 0.9},
+			{"kind": "address", "value": testPeerAddress, "role": "to", "confidence": 0.9},
+		},
+	}, token)
+	if missing.Code != http.StatusOK {
+		t.Fatalf("missing status = %d; body: %s", missing.Code, missing.Body.String())
+	}
+	var missingBody struct {
+		PrefillAddress string `json:"prefillAddress"`
+		Results        []struct {
+			Kind   string `json:"kind"`
+			Status string `json:"status"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(missing.Body.Bytes(), &missingBody); err != nil {
+		t.Fatalf("decode missing: %v", err)
+	}
+	if missingBody.PrefillAddress != "" || missingBody.Results[0].Status != "not_found" {
+		t.Fatalf("missing body = %#v", missingBody)
+	}
+
+	mismatch := test.request(http.MethodPost, "/api/v1/claims/verify", map[string]any{
+		"selectedAddress": testPeerAddress,
+		"claims": []map[string]any{
+			{"kind": "tx_hash", "value": txHash, "confidence": 0.9},
+			{"kind": "address", "value": testPeerAddress, "role": "to", "confidence": 0.9},
+			{"kind": "amount", "value": "1", "asset": "USDT", "confidence": 0.9},
+		},
+	}, token)
+	if mismatch.Code != http.StatusOK {
+		t.Fatalf("mismatch status = %d; body: %s", mismatch.Code, mismatch.Body.String())
+	}
+	var mismatchBody struct {
+		PrefillAddress string `json:"prefillAddress"`
+		Results        []struct {
+			Kind   string `json:"kind"`
+			Status string `json:"status"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(mismatch.Body.Bytes(), &mismatchBody); err != nil {
+		t.Fatalf("decode mismatch: %v", err)
+	}
+	if mismatchBody.PrefillAddress != "" {
+		t.Fatalf("mismatch should not prefill: %#v", mismatchBody)
+	}
+	foundAmountMismatch := false
+	for _, result := range mismatchBody.Results {
+		if result.Kind == "amount" && result.Status == "mismatch" {
+			foundAmountMismatch = true
+		}
+	}
+	if !foundAmountMismatch {
+		t.Fatalf("expected amount mismatch, got %#v", mismatchBody.Results)
+	}
+}
+
+func TestVerifyClaimsRejectsFailedPendingAndWrongContract(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	cutoff := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
+	txHash := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	provider := &fixtureChainDataProvider{
+		cutoff: analysis.BlockCutoff{BlockID: "0000000000012345", Timestamp: cutoff},
+		collection: analysis.Collection{
+			Transactions: []analysis.BlockchainTransaction{
+				{
+					Network: "TRON_MAINNET", Hash: txHash, Successful: false, Confirmed: false,
+				},
+			},
+		},
+	}
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{Provider: provider}, nil)
+	token := ownerToken(t, test.owner.ID)
+
+	failed := test.request(http.MethodPost, "/api/v1/claims/verify", map[string]any{
+		"selectedAddress": testPeerAddress,
+		"claims": []map[string]any{
+			{"kind": "tx_hash", "value": txHash, "confidence": 0.9},
+			{"kind": "address", "value": testPeerAddress, "role": "to", "confidence": 0.9},
+		},
+	}, token)
+	if failed.Code != http.StatusOK {
+		t.Fatalf("failed status = %d; body: %s", failed.Code, failed.Body.String())
+	}
+	var failedBody struct {
+		PrefillAddress string `json:"prefillAddress"`
+		Results        []struct {
+			Kind   string `json:"kind"`
+			Status string `json:"status"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(failed.Body.Bytes(), &failedBody); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if failedBody.PrefillAddress != "" || failedBody.Results[0].Status != "mismatch" {
+		t.Fatalf("failed body = %#v", failedBody)
+	}
+
+	wrongContractHash := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	provider.collection = analysis.Collection{
+		Transactions: []analysis.BlockchainTransaction{{
+			Network: "TRON_MAINNET", Hash: wrongContractHash, Successful: true, Confirmed: true,
+			Transfers: []analysis.TRC20Transfer{{
+				EventIdentity: "log:0", ContractAddress: "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf",
+				Asset: "USDC", FromAddress: testTargetAddress, ToAddress: testPeerAddress,
+				AmountSmallestUnit: "100", Decimals: 6, Timestamp: cutoff,
+			}},
+		}},
+	}
+	wrong := test.request(http.MethodPost, "/api/v1/claims/verify", map[string]any{
+		"selectedAddress": testPeerAddress,
+		"claims": []map[string]any{
+			{"kind": "tx_hash", "value": wrongContractHash, "confidence": 0.9},
+			{"kind": "address", "value": testPeerAddress, "role": "to", "confidence": 0.9},
+			{"kind": "amount", "value": "100", "asset": "USDT", "confidence": 0.9},
+		},
+	}, token)
+	if wrong.Code != http.StatusOK {
+		t.Fatalf("wrong status = %d; body: %s", wrong.Code, wrong.Body.String())
+	}
+	var wrongBody struct {
+		PrefillAddress string `json:"prefillAddress"`
+		Results        []struct {
+			Kind   string `json:"kind"`
+			Status string `json:"status"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(wrong.Body.Bytes(), &wrongBody); err != nil {
+		t.Fatalf("decode wrong: %v", err)
+	}
+	if wrongBody.PrefillAddress != "" {
+		t.Fatalf("wrong contract must not prefill: %#v", wrongBody)
+	}
+	for _, result := range wrongBody.Results {
+		if result.Kind == "tx_hash" && result.Status != "mismatch" {
+			t.Fatalf("expected tx mismatch, got %#v", wrongBody.Results)
+		}
+	}
+}
+
+func TestVerifyClaimsRejectsMalformedAndProviderFailure(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{
+		Provider: &fixtureChainDataProvider{
+			captureErr: context.DeadlineExceeded,
+		},
+	}, nil)
+	token := ownerToken(t, test.owner.ID)
+
+	bad := test.request(http.MethodPost, "/api/v1/claims/verify", map[string]any{
+		"selectedAddress": testTargetAddress,
+		"claims": []map[string]any{
+			{"kind": "address", "value": "not-valid", "role": "to", "confidence": 0.9},
+		},
+	}, token)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("bad status = %d; body: %s", bad.Code, bad.Body.String())
+	}
+	assertErrorCode(t, bad, "invalid_claim_address")
+
+	providerFail := test.request(http.MethodPost, "/api/v1/claims/verify", map[string]any{
+		"selectedAddress": testTargetAddress,
+		"claims": []map[string]any{
+			{"kind": "address", "value": testTargetAddress, "role": "to", "confidence": 0.9},
+		},
+	}, token)
+	if providerFail.Code != http.StatusBadGateway {
+		t.Fatalf("provider status = %d; body: %s", providerFail.Code, providerFail.Body.String())
+	}
+	assertErrorCode(t, providerFail, "provider_unavailable")
+}
+
+func encodeClaimTestJPEG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.RGBA{R: 2, A: 255})
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("jpeg encode: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func multipartClaimExtractNamed(
+	t *testing.T, test *authHTTPTest, token string, image []byte, filename string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("image", filename)
+	if err != nil {
+		t.Fatalf("form file: %v", err)
+	}
+	if _, err := part.Write(image); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/claims/extract", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	response := httptest.NewRecorder()
+	test.engine.ServeHTTP(response, req)
+	return response
 }
 
 func multipartClaimExtract(t *testing.T, test *authHTTPTest, token string, image []byte) *httptest.ResponseRecorder {

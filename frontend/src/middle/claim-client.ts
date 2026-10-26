@@ -3,14 +3,21 @@ import {
   CLAIMS_API_PATH,
   type ClaimErrorResponse,
   type ExtractClaimsResult,
-  type PendingAddressClaim,
+  type PendingClaim,
   type VerifyAddressResult,
+  type VerifyClaimsResult,
 } from "./claim-contract.ts";
 
 export type {
   ExtractClaimsResult,
-  PendingAddressClaim,
+  PendingClaim,
   VerifyAddressResult,
+  VerifyClaimsResult,
+} from "./claim-contract.ts";
+
+export {
+  LOW_CLAIM_CONFIDENCE,
+  MAX_CLAIMS,
 } from "./claim-contract.ts";
 
 type Fetch = typeof fetch;
@@ -29,13 +36,16 @@ export class ClaimClientError extends Error {
 
 function stableErrorMessage(status: number, code: string) {
   if (code === "no_claim") {
-    return "截圖中沒有可抽取的 TRON 地址。";
+    return "截圖中沒有可抽取的 Claim。";
+  }
+  if (code === "unsupported_media") {
+    return "只接受 PNG、JPEG 或 WebP 截圖。";
   }
   if (code === "invalid_claim_address" || code === "malformed_claims") {
     return "截圖抽取結果無效。";
   }
   if (code === "invalid_image" || code === "image_too_large") {
-    return "請上傳有效且未超過大小限制的 PNG 截圖。";
+    return "請上傳有效且未超過大小限制的截圖。";
   }
   if (code === "agent_unavailable" || status === 503 || status === 502) {
     return "Claim 抽取服務目前無法使用。";
@@ -69,7 +79,22 @@ export function shouldApplyClaimResult(args: {
   return true;
 }
 
-export async function extractClaimsFromPng(
+export function claimsFromExtractResult(
+  result: ExtractClaimsResult,
+  idFactory: () => string = () => crypto.randomUUID(),
+): PendingClaim[] {
+  return result.claims.map((claim) => ({
+    id: idFactory(),
+    kind: claim.kind,
+    value: claim.value,
+    role: claim.role,
+    asset: claim.asset,
+    confidence: claim.confidence,
+    status: "unverified",
+  }));
+}
+
+export async function extractClaimsFromImage(
   file: File,
   fetchImpl: Fetch = fetch,
 ): Promise<ExtractClaimsResult> {
@@ -97,12 +122,15 @@ export async function extractClaimsFromPng(
   if (
     result.network !== "tron" ||
     !Array.isArray(result.claims) ||
-    result.claims.length !== 1
+    result.claims.length < 1
   ) {
     throw new ClaimClientError("截圖抽取結果無效。", 502, "malformed_claims");
   }
   return result;
 }
+
+/** @deprecated use extractClaimsFromImage */
+export const extractClaimsFromPng = extractClaimsFromImage;
 
 export async function verifyClaimAddress(
   address: string,
@@ -130,4 +158,41 @@ export async function verifyClaimAddress(
     );
   }
   return payload as VerifyAddressResult;
+}
+
+export async function verifyClaims(
+  input: {
+    selectedAddress: string;
+    claims: Array<{
+      kind: string;
+      value: string;
+      role?: string;
+      asset?: string;
+      confidence: number;
+    }>;
+  },
+  fetchImpl: Fetch = fetch,
+): Promise<VerifyClaimsResult> {
+  const response = await fetchImpl(`${CLAIMS_API_PATH}/verify`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(input),
+    cache: "no-store",
+  });
+  const payload = response.ok
+    ? await response.json()
+    : await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = (payload || {}) as ClaimErrorResponse;
+    const code = error.code || `HTTP_${response.status}`;
+    throw new ClaimClientError(
+      stableErrorMessage(response.status, code),
+      response.status,
+      code,
+    );
+  }
+  return payload as VerifyClaimsResult;
 }

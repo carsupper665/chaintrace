@@ -155,3 +155,59 @@ test("Claim verify BFF forwards JSON verification requests", async (t) => {
     },
   ]);
 });
+
+test("Claim verify-set BFF forwards multi-claim verification", async (t) => {
+  const received = [];
+  const backend = await startBackend(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    received.push({
+      path: request.url,
+      method: request.method,
+      authorization: request.headers.authorization,
+      body: Buffer.concat(chunks).toString("utf8"),
+    });
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(
+      JSON.stringify({
+        prefillAddress: "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE",
+        results: [
+          {
+            kind: "address",
+            value: "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE",
+            status: "verified",
+          },
+        ],
+      }),
+    );
+  });
+  t.after(() => backend.close());
+  process.env.CHAINTRACE_BACKEND_URL = backend.url;
+
+  const payload = {
+    selectedAddress: "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE",
+    claims: [
+      {
+        kind: "address",
+        value: "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE",
+        role: "to",
+        confidence: 0.9,
+      },
+    ],
+  };
+  const response = await fetchApp("/api/claims/verify", {
+    method: "POST",
+    headers: {
+      Cookie: "chaintrace_credential=owner.jwt",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).prefillAddress, payload.selectedAddress);
+  assert.equal(received.length, 1);
+  assert.equal(received[0].path, "/api/v1/claims/verify");
+  assert.equal(received[0].authorization, "Bearer owner.jwt");
+  assert.deepEqual(JSON.parse(received[0].body), payload);
+});

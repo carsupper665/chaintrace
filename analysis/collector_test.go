@@ -39,6 +39,12 @@ func (p *scriptedPageProvider) FetchAddressTransfers(_ context.Context, request 
 	return result.page, result.err
 }
 
+func (p *scriptedPageProvider) LookupConfirmedUSDTTransaction(
+	context.Context, string,
+) (analysis.BlockchainTransaction, bool, error) {
+	return analysis.BlockchainTransaction{}, false, nil
+}
+
 func TestCollectorUsesStableBFSAndDeduplicatesLoopsOverlapsAndTransferEvents(t *testing.T) {
 	cutoff := collectorCutoff()
 	tx1 := collectorTransaction("tx-1", cutoff.Add(-4*time.Hour),

@@ -29,4 +29,4 @@ def extract(
         return JSONResponse(
             status_code=status, content={"code": error.code, "message": error.message}
         )
-    return JSONResponse(status_code=200, content=result.model_dump())
+    return JSONResponse(status_code=200, content=result.model_dump(exclude_none=True))

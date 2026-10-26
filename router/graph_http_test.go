@@ -38,6 +38,12 @@ func (p *graphFixtureProvider) FetchAddressTransfers(_ context.Context, request 
 	return analysis.AddressTransferPage{Transactions: p.transactions}, nil
 }
 
+func (p *graphFixtureProvider) LookupConfirmedUSDTTransaction(
+	context.Context, string,
+) (analysis.BlockchainTransaction, bool, error) {
+	return analysis.BlockchainTransaction{}, false, nil
+}
+
 type graphFixtureEvaluator struct {
 	calls atomic.Int32
 }

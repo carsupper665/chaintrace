@@ -119,3 +119,57 @@ test("verifyClaimAddress returns verified status for activity probe", async () =
   });
   assert.equal(result.status, "verified");
 });
+
+test("verifyClaims posts selected address and bounded claim set", async () => {
+  const { claimsFromExtractResult, verifyClaims } = await import(
+    "../src/middle/claim-client.ts"
+  );
+  const pending = claimsFromExtractResult(
+    {
+      network: "tron",
+      claims: [
+        {
+          kind: "address",
+          value: validAddress,
+          role: "to",
+          confidence: 0.9,
+        },
+        {
+          kind: "amount",
+          value: "1500000",
+          asset: "USDT",
+          confidence: 0.8,
+        },
+      ],
+    },
+    () => "id-1",
+  );
+  assert.equal(pending[0].status, "unverified");
+  assert.equal(pending[0].id, "id-1");
+
+  const result = await verifyClaims(
+    {
+      selectedAddress: validAddress,
+      claims: pending.map((claim) => ({
+        kind: claim.kind,
+        value: claim.value,
+        role: claim.role,
+        asset: claim.asset,
+        confidence: claim.confidence,
+      })),
+    },
+    async (input, init = {}) => {
+      assert.equal(String(input), "/api/claims/verify");
+      assert.equal(init.method, "POST");
+      return Response.json({
+        prefillAddress: validAddress,
+        results: [
+          { kind: "address", value: validAddress, status: "verified" },
+          { kind: "amount", value: "1500000", status: "verified" },
+        ],
+      });
+    },
+  );
+  assert.equal(result.prefillAddress, validAddress);
+  assert.equal(result.results[0].status, "verified");
+});
