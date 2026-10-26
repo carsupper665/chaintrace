@@ -13,7 +13,7 @@ dependencies = ["fastapi", "uvicorn", "python-dotenv", "scikit-learn", "joblib",
 gemini = ["google-genai>=2.3.0"]
 openai = ["openai"]
 anthropic = ["anthropic"]
-dev = ["pytest"]
+dev = ["pytest", "httpx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

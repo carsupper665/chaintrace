@@ -16,6 +16,7 @@
 這個模組不准 import 任何供應商 SDK。
 """
 
+import base64
 import json
 import os
 from abc import ABC, abstractmethod
@@ -382,7 +383,20 @@ class BaseLLM(ABC):
     # 是 de-facto 的 wire format，所以當基本建設。走別種格式的（Gemini）自己覆寫。
 
     def format_user(self, message: Message) -> Step:
-        return {"role": "user", "content": message.content}
+        if not message.images:
+            return {"role": "user", "content": message.content}
+        parts: list[dict[str, Any]] = []
+        if message.content:
+            parts.append({"type": "text", "text": message.content})
+        for image in message.images:
+            encoded = base64.b64encode(image.data).decode("ascii")
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{image.mime_type};base64,{encoded}"},
+                }
+            )
+        return {"role": "user", "content": parts}
 
     def format_assistant(self, message: Message) -> list[Step]:
         """只在沒有 provider_steps 可回放時被叫到。沒東西可重建就回空 list。

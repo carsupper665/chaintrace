@@ -3,6 +3,26 @@ import { backendUrl } from "@/src/middle/backend-url";
 
 const responseHeaders = { "Cache-Control": "no-store" };
 
+function unauthorizedResponse() {
+  return Response.json(
+    {
+      code: "unauthorized",
+      error: "Authentication required",
+    },
+    { status: 401, headers: responseHeaders },
+  );
+}
+
+function unavailableResponse() {
+  return Response.json(
+    {
+      code: "investigation_service_unavailable",
+      error: "Investigation service unavailable",
+    },
+    { status: 503, headers: responseHeaders },
+  );
+}
+
 export async function proxyInvestigationRequest(
   request: Request,
   backendPath: string,
@@ -10,13 +30,7 @@ export async function proxyInvestigationRequest(
 ) {
   const token = readCredential(request);
   if (!token) {
-    return Response.json(
-      {
-        code: "unauthorized",
-        error: "Authentication required",
-      },
-      { status: 401, headers: responseHeaders },
-    );
+    return unauthorizedResponse();
   }
 
   try {
@@ -43,13 +57,39 @@ export async function proxyInvestigationRequest(
       headers,
     });
   } catch {
-    return Response.json(
-      {
-        code: "investigation_service_unavailable",
-        error: "Investigation service unavailable",
+    return unavailableResponse();
+  }
+}
+
+// Multipart Claim uploads must keep the browser FormData boundary; the BFF
+// only attaches the Owner credential and never talks to the Agent directly.
+export async function proxyClaimUpload(request: Request, backendPath: string) {
+  const token = readCredential(request);
+  if (!token) {
+    return unauthorizedResponse();
+  }
+
+  try {
+    const contentType = request.headers.get("content-type") || "";
+    const response = await fetch(`${backendUrl()}${backendPath}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(contentType ? { "Content-Type": contentType } : {}),
       },
-      { status: 503, headers: responseHeaders },
-    );
+      body: await request.arrayBuffer(),
+      cache: "no-store",
+    });
+    const responseType = response.headers.get("content-type");
+    const headers = new Headers(responseHeaders);
+    if (responseType) headers.set("Content-Type", responseType);
+    return new Response(await response.text(), {
+      status: response.status,
+      headers,
+    });
+  } catch {
+    return unavailableResponse();
   }
 }
 

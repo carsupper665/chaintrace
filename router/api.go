@@ -3,6 +3,7 @@ package router
 import (
 	"chaintrace/agentclient"
 	"chaintrace/analysis"
+	"chaintrace/claimclient"
 	"chaintrace/controller"
 	"chaintrace/middleware"
 	"chaintrace/scoreclient"
@@ -29,12 +30,14 @@ type agentFactory func(*analysis.RunManager) controller.AgentProvider
 func ApiRouter(router *gin.Engine) {
 	apiRouterWithOptions(
 		router, controller.AuthOptions{}, productionAnalysisOptions(),
-		ProductionLimits(), productionAgentProvider,
+		ProductionLimits(), productionAgentProvider, productionClaimExtractor(),
 	)
 }
 
 func ApiRouterWithAuthOptions(router *gin.Engine, options controller.AuthOptions) {
-	apiRouterWithOptions(router, options, productionAnalysisOptions(), Limits{}, nil)
+	apiRouterWithOptions(
+		router, options, productionAnalysisOptions(), Limits{}, nil, productionClaimExtractor(),
+	)
 }
 
 // ApiRouterWithAgentProvider injects an Agent, which is how the HTTP tests
@@ -43,6 +46,7 @@ func ApiRouterWithAgentProvider(router *gin.Engine, provider controller.AgentPro
 	apiRouterWithOptions(
 		router, controller.AuthOptions{}, productionAnalysisOptions(), Limits{},
 		func(*analysis.RunManager) controller.AgentProvider { return provider },
+		productionClaimExtractor(),
 	)
 }
 
@@ -93,6 +97,19 @@ func productionLearnedScorer() analysis.LearnedScorer {
 	return client
 }
 
+// productionClaimExtractor returns a nil interface when the sidecar is not
+// configured, matching productionAgentProvider / productionLearnedScorer.
+func productionClaimExtractor() controller.ClaimExtractor {
+	client := claimclient.New(
+		utils.GetEnvString("AGENT_BASE_URL", ""),
+		utils.GetEnvString("AGENT_SHARED_KEY", ""),
+	)
+	if client == nil {
+		return nil
+	}
+	return client
+}
+
 func ProductionLimits() Limits {
 	return Limits{
 		UnauthenticatedRequestsPerMinute: utils.GetEnvInt("GLOBAL_MAX_REQUEST_NUM", 100),
@@ -101,7 +118,17 @@ func ProductionLimits() Limits {
 }
 
 func ApiRouterWithAnalysisOptions(router *gin.Engine, options analysis.Options) {
-	apiRouterWithOptions(router, controller.AuthOptions{}, options, Limits{}, nil)
+	apiRouterWithOptions(router, controller.AuthOptions{}, options, Limits{}, nil, productionClaimExtractor())
+}
+
+// ApiRouterWithClaimOptions injects extract + chain-provider doubles for the
+// screenshot Claim HTTP journey without requiring a live Agent sidecar.
+func ApiRouterWithClaimOptions(
+	router *gin.Engine,
+	options analysis.Options,
+	extractor controller.ClaimExtractor,
+) {
+	apiRouterWithOptions(router, controller.AuthOptions{}, options, Limits{}, nil, extractor)
 }
 
 func apiRouterWithOptions(
@@ -110,6 +137,7 @@ func apiRouterWithOptions(
 	analysisOptions analysis.Options,
 	limits Limits,
 	newAgent agentFactory,
+	claimExtractor controller.ClaimExtractor,
 ) {
 	lc := controller.NewChallengeStore(authOptions)
 	runManager := analysis.NewRunManager(analysisOptions)
@@ -121,6 +149,7 @@ func apiRouterWithOptions(
 	investigationHandler := controller.NewInvestigationHandler(runManager)
 	conversationHandler := controller.NewConversationHandler(agentProvider)
 	agentHandler := controller.NewAgentHandler(agentProvider)
+	claimHandler := controller.NewClaimHandler(claimExtractor, analysisOptions.Provider)
 	// One bucket shared by every unauthenticated endpoint, per client IP.
 	unauthenticated := middleware.IpRateLimiter(limits.UnauthenticatedRequestsPerMinute, 60)
 	api := router.Group("/api")
@@ -152,6 +181,8 @@ func apiRouterWithOptions(
 		protected.POST("/investigations/:id/conversation/stream", conversationHandler.SubmitConversationStream)
 		protected.POST("/investigations/:id/agent/summary", agentHandler.GenerateSummary)
 		protected.GET("/agent/models", agentHandler.ListModels)
+		protected.POST("/claims/extract", claimHandler.Extract)
+		protected.POST("/claims/verify-address", claimHandler.VerifyAddress)
 	}
 	auth := router.Group("/Authentication", unauthenticated)
 	{

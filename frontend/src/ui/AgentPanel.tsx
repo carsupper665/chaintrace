@@ -203,6 +203,64 @@ function ActiveAgentPanel({ ui }: { ui: ChainTraceController }) {
               第一次成功分析後，調查目標已永久鎖定；新地址需建立新的 Investigation。
             </p>
           )}
+          {!active.targetLocked && (
+            <div className="claim-upload">
+              <label htmlFor="claim-screenshot">截圖 Claim</label>
+              <input
+                id="claim-screenshot"
+                type="file"
+                accept="image/png"
+                disabled={ui.isClaimExtracting || ui.isGraphLoading}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (file) void ui.extractClaimFromScreenshot(file);
+                }}
+              />
+              <p className="claim-hint">上傳含單一 TRON 地址的 PNG；結果為待驗證 Claim，不是 Agent Evidence。</p>
+              {ui.pendingClaim && (
+                <div className="claim-pending" role="status">
+                  <div>
+                    <strong>待驗證地址</strong>
+                    <code>{ui.pendingClaim.value}</code>
+                    <span>
+                      {ui.pendingClaim.role} · confidence{" "}
+                      {ui.pendingClaim.confidence.toFixed(2)} ·{" "}
+                      {ui.pendingClaim.status === "unverified"
+                        ? "待驗證"
+                        : ui.pendingClaim.status === "verified"
+                          ? "已驗證"
+                          : "無鏈上活動"}
+                    </span>
+                  </div>
+                  <div className="claim-actions">
+                    <button
+                      type="button"
+                      onClick={() => void ui.verifyPendingClaim()}
+                      disabled={
+                        ui.isClaimVerifying ||
+                        ui.pendingClaim.status === "verified"
+                      }
+                    >
+                      {ui.isClaimVerifying ? "驗證中…" : "驗證鏈上活動"}
+                    </button>
+                    <button type="button" onClick={ui.clearPendingClaim}>
+                      清除
+                    </button>
+                  </div>
+                </div>
+              )}
+              {(ui.claimError || ui.claimMessage || ui.isClaimExtracting) && (
+                <div
+                  className={`target-feedback ${ui.claimError ? "error" : "success"}`}
+                  role={ui.claimError ? "alert" : "status"}
+                >
+                  {ui.claimError ||
+                    (ui.isClaimExtracting ? "正在抽取 Claim…" : ui.claimMessage)}
+                </div>
+              )}
+            </div>
+          )}
           {(ui.graphError || ui.targetMessage) && (
             <div
               className={`target-feedback ${ui.graphError ? "error" : "success"}`}

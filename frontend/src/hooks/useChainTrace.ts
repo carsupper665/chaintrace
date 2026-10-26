@@ -6,11 +6,15 @@ import {
   getAgentModels,
 } from "@/src/middle/conversation-client";
 import type { AgentModel } from "@/src/middle/conversation-contract";
-import type { AnalysisFlowResult } from "@/src/middle/investigation-client";
+import type {
+  AnalysisFlowResult,
+  PendingAddressClaim,
+} from "@/src/middle/investigation-client";
 import {
   AnalysisRunClientError,
   createAnalysisRunner,
   createInvestigation as createInvestigationRecord,
+  extractClaimsFromPng,
   filterInvestigations,
   getCurrentAnalysisResult,
   getInvestigation,
@@ -20,6 +24,7 @@ import {
   reloadStableAnalysis,
   renameInvestigation as renameInvestigationRecord,
   setInvestigationTarget,
+  verifyClaimAddress,
 } from "@/src/middle/investigation-client";
 import type {
   AnalysisScope,
@@ -57,6 +62,13 @@ export function useChainTrace() {
   const [activeId, setActiveId] = useState("");
   const [query, setQuery] = useState("");
   const [addressDraft, setAddressDraft] = useState("");
+  const [pendingClaim, setPendingClaim] = useState<PendingAddressClaim | null>(
+    null,
+  );
+  const [claimMessage, setClaimMessage] = useState("");
+  const [claimError, setClaimError] = useState("");
+  const [isClaimExtracting, setIsClaimExtracting] = useState(false);
+  const [isClaimVerifying, setIsClaimVerifying] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [conversationError, setConversationError] = useState("");
   // Compatible models the Agent offers. Empty hides the picker; "" as the
@@ -734,6 +746,62 @@ export function useChainTrace() {
     }
   }
 
+  async function extractClaimFromScreenshot(file: File) {
+    if (!active || active.targetLocked || isClaimExtracting) return;
+    setClaimError("");
+    setClaimMessage("");
+    setPendingClaim(null);
+    setIsClaimExtracting(true);
+    try {
+      const result = await extractClaimsFromPng(file);
+      const claim = result.claims[0];
+      setPendingClaim({ ...claim, status: "unverified" });
+      setClaimMessage("已抽出待驗證地址 Claim；請確認後再驗證鏈上活動。");
+    } catch (error) {
+      setClaimError(
+        error instanceof InvestigationClientError
+          ? error.message
+          : "無法從截圖抽出地址，請稍後再試。",
+      );
+    } finally {
+      setIsClaimExtracting(false);
+    }
+  }
+
+  async function verifyPendingClaim() {
+    if (!pendingClaim || isClaimVerifying || active?.targetLocked) return;
+    setClaimError("");
+    setClaimMessage("");
+    setIsClaimVerifying(true);
+    try {
+      const result = await verifyClaimAddress(pendingClaim.value);
+      if (result.status === "verified") {
+        setPendingClaim({ ...pendingClaim, status: "verified" });
+        setAddressDraft(result.address);
+        setClaimMessage(
+          "地址已通過鏈上活動驗證，已預填調查目標；請確認後按「儲存目標」。",
+        );
+        return;
+      }
+      setPendingClaim({ ...pendingClaim, status: "no_activity" });
+      setClaimMessage("此地址目前沒有可用的鏈上 USDT 活動，不能預填調查目標。");
+    } catch (error) {
+      setClaimError(
+        error instanceof InvestigationClientError
+          ? error.message
+          : "無法驗證地址活動，請稍後再試。",
+      );
+    } finally {
+      setIsClaimVerifying(false);
+    }
+  }
+
+  function clearPendingClaim() {
+    setPendingClaim(null);
+    setClaimError("");
+    setClaimMessage("");
+  }
+
   async function expandGraphNode(nodeId: string) {
     if (!transactionGraph || expandingNodeId || expandedNodeIds.has(nodeId)) {
       return;
@@ -867,6 +935,9 @@ export function useChainTrace() {
     setGraphHistoryDepth(0);
     setActiveId(nextInvestigation.id);
     setAddressDraft(saved?.addressDraft ?? nextInvestigation.address ?? "");
+    setPendingClaim(null);
+    setClaimError("");
+    setClaimMessage("");
     setTransactionGraph(null);
     setSelectedNodeId(null);
     setExpandedNodeIds(new Set());
@@ -1407,6 +1478,11 @@ export function useChainTrace() {
     active,
     activeId,
     addressDraft,
+    pendingClaim,
+    claimMessage,
+    claimError,
+    isClaimExtracting,
+    isClaimVerifying,
     analysisError,
     analysisOutcome,
     analysisRun,
@@ -1472,6 +1548,9 @@ export function useChainTrace() {
     beginPanelResize,
     adjustPanelWidth,
     confirmInvestigationAddress,
+    extractClaimFromScreenshot,
+    verifyPendingClaim,
+    clearPendingClaim,
     cancelAnalysis,
     createInvestigation,
     deleteInvestigation,

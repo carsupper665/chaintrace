@@ -362,6 +362,76 @@ export async function setInvestigationTarget(
   );
 }
 
+export type PendingAddressClaim = {
+  kind: "address";
+  value: string;
+  role: "from" | "to" | "unknown";
+  confidence: number;
+  status: "unverified" | "verified" | "no_activity";
+};
+
+export type ExtractClaimsResult = {
+  network: "tron";
+  claims: PendingAddressClaim[];
+};
+
+export type VerifyAddressResult = {
+  address: string;
+  network: "tron";
+  status: "verified" | "no_activity";
+};
+
+const CLAIMS_API_PATH = "/api/claims";
+
+export async function extractClaimsFromPng(
+  file: File,
+  fetchImpl: Fetch = fetch,
+): Promise<ExtractClaimsResult> {
+  const body = new FormData();
+  body.append("image", file, file.name || "screenshot.png");
+  const response = await fetchImpl(`${CLAIMS_API_PATH}/extract`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+    body,
+    cache: "no-store",
+  });
+  const payload = response.ok
+    ? await response.json()
+    : await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = (payload || {}) as InvestigationErrorResponse;
+    const code = error.code || `HTTP_${response.status}`;
+    throw new InvestigationClientError(
+      stableErrorMessage(response.status, code, error),
+      response.status,
+      code,
+    );
+  }
+  const result = payload as ExtractClaimsResult;
+  if (result.network !== "tron" || !Array.isArray(result.claims) || result.claims.length !== 1) {
+    throw new InvestigationClientError(
+      "截圖抽取結果無效。",
+      502,
+      "malformed_claims",
+    );
+  }
+  return result;
+}
+
+export async function verifyClaimAddress(
+  address: string,
+  fetchImpl: Fetch = fetch,
+): Promise<VerifyAddressResult> {
+  return requestJson<VerifyAddressResult>(
+    `${CLAIMS_API_PATH}/verify-address`,
+    {
+      method: "POST",
+      body: JSON.stringify({ address: address.trim() }),
+    },
+    fetchImpl,
+  );
+}
+
 export function normalizeAnalysisScope(
   scope: AnalysisScopeInput = {},
 ): AnalysisScope {

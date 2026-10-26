@@ -12,6 +12,18 @@ StopReason = Literal["stop", "tool_calls", "length", "refusal"]
 
 
 @dataclass(frozen=True)
+class ImageContent:
+    """一張圖片的原始 bytes 與 MIME type。
+
+    供應商怎麼編碼（base64、inline data、data URL）是 adapter 的事；
+    上層只傳中性的 bytes，不准出現 SDK 物件。
+    """
+
+    data: bytes
+    mime_type: str
+
+
+@dataclass(frozen=True)
 class ToolCall:
     """模型要求呼叫一個工具。
 
@@ -37,10 +49,12 @@ class Message:
     """對話中的一則訊息。
 
     system 不是一種 role，因為三家擺的位置都不同；它是 complete() 的獨立參數。
+    images 只會出現在 user 訊息；沒有圖片能力的 adapter 應回 LLMError。
     """
 
     role: Role
     content: str = ""
+    images: tuple[ImageContent, ...] = ()
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str = ""
     """role == "tool" 時，這則是在回覆哪一個 ToolCall。"""

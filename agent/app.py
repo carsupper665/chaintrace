@@ -24,6 +24,8 @@ from schemas import ChatRequest, ChatResponse
 from session import SessionStore
 from turn import InvalidTurn, SessionExpired, run_turn, run_turn_stream
 
+from claims.router import router as claims_router
+
 try:
     from scoring.service import router as scoring_router
 except Exception as error:  # noqa: BLE001
@@ -180,6 +182,7 @@ def create_app(*, llm=None, store: SessionStore | None = None) -> FastAPI:
             headers={"Cache-Control": "no-cache"},
         )
 
+    app.include_router(claims_router)
     if scoring_router is not None:
         app.include_router(scoring_router)
 

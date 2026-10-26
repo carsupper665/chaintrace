@@ -217,6 +217,8 @@ class CodexLLM:
         del max_tokens  # app-server owns the model output budget
         if schema is not None:
             raise LLMError("Codex app-server adapter 不支援結構化輸出")
+        if any(message.images for message in messages):
+            raise LLMError("Codex app-server adapter 不支援圖片輸入")
 
         token = self._state_token(messages)
         with self._lock:

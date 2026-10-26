@@ -1,0 +1,261 @@
+package router_test
+
+import (
+	"bytes"
+	"chaintrace/analysis"
+	"chaintrace/claimclient"
+	"chaintrace/controller"
+	apiRouter "chaintrace/router"
+	"context"
+	"encoding/json"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+var claimTestPNG = []byte{
+	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+	0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+	0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+	0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+	0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+	0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+}
+
+type fixtureClaimExtractor struct {
+	result claimclient.ExtractResult
+	err    error
+	calls  int
+	last   []byte
+}
+
+func (f *fixtureClaimExtractor) ExtractPNG(_ context.Context, image []byte) (claimclient.ExtractResult, error) {
+	f.calls++
+	f.last = append([]byte(nil), image...)
+	return f.result, f.err
+}
+
+func TestUnauthenticatedClaimExtractIsRejectedBeforeAgent(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	extractor := &fixtureClaimExtractor{
+		result: claimclient.ExtractResult{
+			Network: "tron",
+			Claims: []claimclient.AddressClaim{{
+				Kind: "address", Value: testTargetAddress, Role: "to", Confidence: 0.9,
+			}},
+		},
+	}
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{
+		Provider: successfulProvider(time.Now().UTC()),
+	}, extractor)
+
+	response := multipartClaimExtract(t, test, "", claimTestPNG)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d; body: %s", response.Code, response.Body.String())
+	}
+	if extractor.calls != 0 {
+		t.Fatalf("extractor calls = %d, want 0 before auth", extractor.calls)
+	}
+}
+
+func TestOwnerCanExtractPendingAddressClaimFromPNG(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	extractor := &fixtureClaimExtractor{
+		result: claimclient.ExtractResult{
+			Network: "tron",
+			Claims: []claimclient.AddressClaim{{
+				Kind: "address", Value: "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj",
+				Role: "to", Confidence: 0.92,
+			}},
+		},
+	}
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{
+		Provider: successfulProvider(time.Now().UTC()),
+	}, extractor)
+	token := ownerToken(t, test.owner.ID)
+
+	response := multipartClaimExtract(t, test, token, claimTestPNG)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", response.Code, response.Body.String())
+	}
+	if extractor.calls != 1 || !bytes.Equal(extractor.last, claimTestPNG) {
+		t.Fatalf("extractor saw %#v calls=%d", extractor.last, extractor.calls)
+	}
+	var body struct {
+		Network string `json:"network"`
+		Claims  []struct {
+			Kind       string  `json:"kind"`
+			Value      string  `json:"value"`
+			Role       string  `json:"role"`
+			Confidence float64 `json:"confidence"`
+			Status     string  `json:"status"`
+		} `json:"claims"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Network != "tron" || len(body.Claims) != 1 {
+		t.Fatalf("body = %#v", body)
+	}
+	claim := body.Claims[0]
+	if claim.Kind != "address" || claim.Value != "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj" ||
+		claim.Role != "to" || claim.Confidence != 0.92 || claim.Status != "unverified" {
+		t.Fatalf("claim = %#v", claim)
+	}
+}
+
+func TestExtractRejectsInvalidClaimAddressFromAgent(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	extractor := &fixtureClaimExtractor{
+		result: claimclient.ExtractResult{
+			Network: "tron",
+			Claims: []claimclient.AddressClaim{{
+				Kind: "address", Value: "not-valid", Role: "to", Confidence: 0.5,
+			}},
+		},
+	}
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{}, extractor)
+	token := ownerToken(t, test.owner.ID)
+
+	response := multipartClaimExtract(t, test, token, claimTestPNG)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; body: %s", response.Code, response.Body.String())
+	}
+	assertErrorCode(t, response, "invalid_claim_address")
+}
+
+func TestVerifyAddressReportsActivityFromProvider(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	cutoff := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
+	provider := successfulProvider(cutoff)
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{Provider: provider}, nil)
+	token := ownerToken(t, test.owner.ID)
+
+	verified := test.request(http.MethodPost, "/api/v1/claims/verify-address", map[string]string{
+		"address": testTargetAddress,
+	}, token)
+	if verified.Code != http.StatusOK {
+		t.Fatalf("verified status = %d; body: %s", verified.Code, verified.Body.String())
+	}
+	assertJSONField(t, verified.Body.Bytes(), "status", "verified")
+
+	idle := test.request(http.MethodPost, "/api/v1/claims/verify-address", map[string]string{
+		"address": "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj",
+	}, token)
+	if idle.Code != http.StatusOK {
+		t.Fatalf("idle status = %d; body: %s", idle.Code, idle.Body.String())
+	}
+	assertJSONField(t, idle.Body.Bytes(), "status", "no_activity")
+}
+
+func TestClaimExtractThenVerifyThenCreateInvestigation(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	cutoff := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
+	extractor := &fixtureClaimExtractor{
+		result: claimclient.ExtractResult{
+			Network: "tron",
+			Claims: []claimclient.AddressClaim{{
+				Kind: "address", Value: testTargetAddress, Role: "to", Confidence: 0.88,
+			}},
+		},
+	}
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{
+		Provider: successfulProvider(cutoff),
+	}, extractor)
+	token := ownerToken(t, test.owner.ID)
+
+	extracted := multipartClaimExtract(t, test, token, claimTestPNG)
+	if extracted.Code != http.StatusOK {
+		t.Fatalf("extract status = %d; body: %s", extracted.Code, extracted.Body.String())
+	}
+
+	verified := test.request(http.MethodPost, "/api/v1/claims/verify-address", map[string]string{
+		"address": testTargetAddress,
+	}, token)
+	if verified.Code != http.StatusOK {
+		t.Fatalf("verify status = %d; body: %s", verified.Code, verified.Body.String())
+	}
+	assertJSONField(t, verified.Body.Bytes(), "status", "verified")
+
+	// Prefill uses the existing Investigation create + target update path — no
+	// second create API. Owner still confirms by writing the Target.
+	created := test.request(http.MethodPost, "/api/v1/investigations", map[string]string{
+		"title": "From claim",
+	}, token)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status = %d; body: %s", created.Code, created.Body.String())
+	}
+	var creation struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &creation); err != nil || creation.ID == "" {
+		t.Fatalf("decode creation: %v body=%s", err, created.Body.String())
+	}
+	confirmed := test.request(http.MethodPatch, "/api/v1/investigations/"+creation.ID, map[string]string{
+		"address": testTargetAddress,
+	}, token)
+	if confirmed.Code != http.StatusOK {
+		t.Fatalf("confirm target status = %d; body: %s", confirmed.Code, confirmed.Body.String())
+	}
+	assertJSONField(t, confirmed.Body.Bytes(), "address", testTargetAddress)
+}
+
+func multipartClaimExtract(t *testing.T, test *authHTTPTest, token string, image []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("image", "shot.png")
+	if err != nil {
+		t.Fatalf("form file: %v", err)
+	}
+	if _, err := part.Write(image); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/claims/extract", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	response := httptest.NewRecorder()
+	test.engine.ServeHTTP(response, req)
+	return response
+}
+
+func assertErrorCode(t *testing.T, response *httptest.ResponseRecorder, code string) {
+	t.Helper()
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error: %v body=%s", err, response.Body.String())
+	}
+	if body.Code != code {
+		t.Fatalf("code = %q, want %q", body.Code, code)
+	}
+}
+
+func assertJSONField(t *testing.T, raw []byte, key, want string) {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, _ := body[key].(string)
+	if got != want {
+		t.Fatalf("%s = %q, want %q; body=%s", key, got, want, string(raw))
+	}
+}
+
+var _ controller.ClaimExtractor = (*fixtureClaimExtractor)(nil)

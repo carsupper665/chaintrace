@@ -19,6 +19,7 @@ google.genai 的型別只准出現在這個檔案裡。進來出去都是 llm.ty
      必須翻成 stop_reason="length"，不能當成正常結束。
 """
 
+import base64
 from typing import Any, Iterable, Sequence
 
 from .base import BaseLLM, Step, function_declaration
@@ -80,7 +81,20 @@ class GeminiLLM(BaseLLM):
     # ---- request ----
 
     def format_user(self, message: Message) -> Step:
-        return {"type": "user_input", "content": _text_content(message.content)}
+        if not message.images:
+            return {"type": "user_input", "content": _text_content(message.content)}
+        parts: list[dict[str, Any]] = []
+        for image in message.images:
+            parts.append(
+                {
+                    "type": "image",
+                    "data": base64.b64encode(image.data).decode("ascii"),
+                    "mime_type": image.mime_type,
+                }
+            )
+        if message.content:
+            parts.extend(_text_content(message.content))
+        return {"type": "user_input", "content": parts}
 
     def format_assistant(self, message: Message) -> list[Step]:
         # 從資料庫讀回的歷史沒有簽章，只剩文字；連文字都沒有就什麼都不補。

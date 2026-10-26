@@ -104,10 +104,12 @@ Agent 無法據以行動的拒絕等於死路。
 - 端點放在 `/v1/` 底下。破壞相容性就升版號，不要偷改既有欄位語意。
 - Go 側型別以 `controller.AgentProvider`（`controller/conversation.go`）為準，JSON 欄位跟著它走。
 - 新增欄位一律可選，舊版收到不認得的欄位要能忽略。
-- 端點越少越好。目前只需要三個：
+- 端點越少越好。目前需要：
   - `POST /v1/agent/chat` — 一個對話回合，回應可含 `tool_calls`
   - `POST /v1/score` — 一批轉帳換一個學習式風險分數（ADR-0015）。刪掉 `scoring/`
     這條路由就消失，agent 其他部分照常運作
+  - `POST /v1/extract-claims` — 一張截圖換成結構化 Claim（ADR-0017）。無 tools、
+    不進 conversation / Analysis Dataset
   - `GET /healthz` — 活著沒
 
 ## 8. 失敗處理

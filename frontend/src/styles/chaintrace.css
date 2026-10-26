@@ -944,6 +944,67 @@ button {
   color: #87b6ff;
 }
 
+.claim-upload {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.claim-upload label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #8e9993;
+}
+
+.claim-hint {
+  margin: 0;
+  font-size: 10px;
+  color: #8e9993;
+}
+
+.claim-pending {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 214, 102, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 214, 102, 0.06);
+}
+
+.claim-pending code {
+  display: block;
+  margin: 4px 0;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.claim-pending span {
+  font-size: 10px;
+  color: #8e9993;
+}
+
+.claim-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.claim-actions button {
+  min-width: 55px;
+  height: 31px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 214, 102, 0.3);
+  border-radius: 7px;
+  background: rgba(255, 214, 102, 0.1);
+  color: #ffd666;
+  font-size: 9px;
+  font-weight: 700;
+}
+
 .target-actions .cancel-analysis-button {
   border-color: rgba(255, 137, 132, 0.3);
   background: rgba(255, 137, 132, 0.09);
