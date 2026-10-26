@@ -48,14 +48,16 @@ test("shouldApplyClaimResult rejects stale generation and switched investigation
   );
 });
 
-test("extractClaimsFromPng posts multipart and returns one pending claim", async () => {
-  const { extractClaimsFromPng } = await import("../src/middle/claim-client.ts");
+test("extractClaimsFromImage posts multipart and returns pending claims", async () => {
+  const { extractClaimsFromImage } = await import(
+    "../src/middle/claim-client.ts"
+  );
   const requests = [];
   const file = new File([Uint8Array.from([137, 80, 78, 71])], "shot.png", {
     type: "image/png",
   });
 
-  const result = await extractClaimsFromPng(file, async (input, init = {}) => {
+  const result = await extractClaimsFromImage(file, async (input, init = {}) => {
     requests.push({
       path: String(input),
       method: init.method,
@@ -82,8 +84,8 @@ test("extractClaimsFromPng posts multipart and returns one pending claim", async
   assert.equal(result.claims[0].value, validAddress);
 });
 
-test("extractClaimsFromPng surfaces no_claim without inventing success", async () => {
-  const { ClaimClientError, extractClaimsFromPng } = await import(
+test("extractClaimsFromImage surfaces no_claim without inventing success", async () => {
+  const { ClaimClientError, extractClaimsFromImage } = await import(
     "../src/middle/claim-client.ts"
   );
   const file = new File([Uint8Array.from([1, 2, 3])], "empty.png", {
@@ -92,7 +94,7 @@ test("extractClaimsFromPng surfaces no_claim without inventing success", async (
 
   await assert.rejects(
     () =>
-      extractClaimsFromPng(file, async () =>
+      extractClaimsFromImage(file, async () =>
         Response.json(
           { code: "no_claim", message: "none" },
           { status: 400 },
@@ -105,19 +107,14 @@ test("extractClaimsFromPng surfaces no_claim without inventing success", async (
   );
 });
 
-test("verifyClaimAddress returns verified status for activity probe", async () => {
-  const { verifyClaimAddress } = await import("../src/middle/claim-client.ts");
-  const result = await verifyClaimAddress(validAddress, async (input, init = {}) => {
-    assert.equal(String(input), "/api/claims/verify-address");
-    assert.equal(init.method, "POST");
-    assert.deepEqual(JSON.parse(String(init.body)), { address: validAddress });
-    return Response.json({
-      address: validAddress,
-      network: "tron",
-      status: "verified",
-    });
-  });
-  assert.equal(result.status, "verified");
+test("stableErrorMessage prefers provider_unavailable over HTTP 502 fallback", async () => {
+  const { stableErrorMessage } = await import("../src/middle/claim-client.ts");
+  assert.match(
+    stableErrorMessage(502, "provider_unavailable"),
+    /鏈上驗證服務/,
+  );
+  assert.match(stableErrorMessage(502, "agent_unavailable"), /Claim 抽取服務/);
+  assert.match(stableErrorMessage(502, "HTTP_502"), /Claim 抽取服務/);
 });
 
 test("verifyClaims posts selected address and bounded claim set", async () => {

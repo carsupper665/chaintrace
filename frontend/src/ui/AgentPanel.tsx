@@ -22,6 +22,31 @@ function conversationContent(message: {
   return message.content;
 }
 
+function formatClaimActual(actual: Record<string, unknown>) {
+  const parts: string[] = [];
+  if (typeof actual.from === "string") parts.push(`from ${actual.from}`);
+  if (typeof actual.to === "string") parts.push(`to ${actual.to}`);
+  if (typeof actual.amount === "string" || typeof actual.amount === "number") {
+    parts.push(`amount ${String(actual.amount)}`);
+  }
+  if (typeof actual.successful === "boolean") {
+    parts.push(`successful=${actual.successful}`);
+  }
+  if (typeof actual.confirmed === "boolean") {
+    parts.push(`confirmed=${actual.confirmed}`);
+  }
+  if (Array.isArray(actual.transfers)) {
+    for (const transfer of actual.transfers) {
+      if (!transfer || typeof transfer !== "object") continue;
+      const row = transfer as Record<string, unknown>;
+      parts.push(
+        `${String(row.from ?? "?")} → ${String(row.to ?? "?")} · ${String(row.amount ?? "?")}`,
+      );
+    }
+  }
+  return parts.length > 0 ? parts.join(" · ") : JSON.stringify(actual);
+}
+
 export function AgentPanel({ ui }: { ui: ChainTraceController }) {
   if (!ui.active) return null;
   return <ActiveAgentPanel ui={ui} />;
@@ -276,10 +301,10 @@ function ActiveAgentPanel({ ui }: { ui: ChainTraceController }) {
                               )
                             }
                           />
-                          {claim.actual?.amount != null && (
+                          {claim.actual && (
                             <p className="claim-actual">
-                              鏈上金額{" "}
-                              <code>{String(claim.actual.amount)}</code>
+                              鏈上實際值{" "}
+                              <code>{formatClaimActual(claim.actual)}</code>
                             </p>
                           )}
                           <div className="claim-actions">

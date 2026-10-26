@@ -30,12 +30,6 @@ export type ExtractClaimsResult = {
   }>;
 };
 
-export type VerifyAddressResult = {
-  address: string;
-  network: "tron";
-  status: "verified" | "no_activity";
-};
-
 export type VerifyClaimsResult = {
   results: Array<{
     kind: ClaimKind;

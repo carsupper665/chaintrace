@@ -114,48 +114,6 @@ test("Claim extract BFF forwards multipart with Owner credential", async (t) => 
   assert.ok(received[0].bodyLength > 0);
 });
 
-test("Claim verify BFF forwards JSON verification requests", async (t) => {
-  const received = [];
-  const backend = await startBackend((request, response) => {
-    received.push({
-      path: request.url,
-      method: request.method,
-      authorization: request.headers.authorization,
-    });
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(
-      JSON.stringify({
-        address: "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE",
-        network: "tron",
-        status: "verified",
-      }),
-    );
-  });
-  t.after(() => backend.close());
-  process.env.CHAINTRACE_BACKEND_URL = backend.url;
-
-  const response = await fetchApp("/api/claims/verify-address", {
-    method: "POST",
-    headers: {
-      Cookie: "chaintrace_credential=owner.jwt",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      address: "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE",
-    }),
-  });
-
-  assert.equal(response.status, 200);
-  assert.equal((await response.json()).status, "verified");
-  assert.deepEqual(received, [
-    {
-      path: "/api/v1/claims/verify-address",
-      method: "POST",
-      authorization: "Bearer owner.jwt",
-    },
-  ]);
-});
-
 test("Claim verify-set BFF forwards multi-claim verification", async (t) => {
   const received = [];
   const backend = await startBackend(async (request, response) => {

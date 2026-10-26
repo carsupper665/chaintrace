@@ -151,7 +151,7 @@ func TestExtractRejectsOversizedMultipartBeforeAgent(t *testing.T) {
 	}
 }
 
-func TestVerifyAddressReportsActivityFromProvider(t *testing.T) {
+func TestVerifyClaimsReportsAddressActivityFromProvider(t *testing.T) {
 	test := newAuthHTTPTest(t)
 	cutoff := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
 	provider := successfulProvider(cutoff)
@@ -159,21 +159,50 @@ func TestVerifyAddressReportsActivityFromProvider(t *testing.T) {
 	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{Provider: provider}, nil)
 	token := ownerToken(t, test.owner.ID)
 
-	verified := test.request(http.MethodPost, "/api/v1/claims/verify-address", map[string]string{
-		"address": testTargetAddress,
+	verified := test.request(http.MethodPost, "/api/v1/claims/verify", map[string]any{
+		"selectedAddress": testTargetAddress,
+		"claims": []map[string]any{
+			{"kind": "address", "value": testTargetAddress, "role": "to", "confidence": 0.9},
+		},
 	}, token)
 	if verified.Code != http.StatusOK {
 		t.Fatalf("verified status = %d; body: %s", verified.Code, verified.Body.String())
 	}
-	assertJSONField(t, verified.Body.Bytes(), "status", "verified")
+	var verifiedBody struct {
+		PrefillAddress string `json:"prefillAddress"`
+		Results        []struct {
+			Status string `json:"status"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(verified.Body.Bytes(), &verifiedBody); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if verifiedBody.PrefillAddress != testTargetAddress || verifiedBody.Results[0].Status != "verified" {
+		t.Fatalf("verified body = %#v", verifiedBody)
+	}
 
-	idle := test.request(http.MethodPost, "/api/v1/claims/verify-address", map[string]string{
-		"address": "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj",
+	idleAddress := "TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj"
+	idle := test.request(http.MethodPost, "/api/v1/claims/verify", map[string]any{
+		"selectedAddress": idleAddress,
+		"claims": []map[string]any{
+			{"kind": "address", "value": idleAddress, "role": "to", "confidence": 0.9},
+		},
 	}, token)
 	if idle.Code != http.StatusOK {
 		t.Fatalf("idle status = %d; body: %s", idle.Code, idle.Body.String())
 	}
-	assertJSONField(t, idle.Body.Bytes(), "status", "no_activity")
+	var idleBody struct {
+		PrefillAddress string `json:"prefillAddress"`
+		Results        []struct {
+			Status string `json:"status"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(idle.Body.Bytes(), &idleBody); err != nil {
+		t.Fatalf("decode idle: %v", err)
+	}
+	if idleBody.PrefillAddress != "" || idleBody.Results[0].Status != "no_activity" {
+		t.Fatalf("idle body = %#v", idleBody)
+	}
 }
 
 func TestClaimExtractThenVerifyThenCreateInvestigation(t *testing.T) {
@@ -198,13 +227,24 @@ func TestClaimExtractThenVerifyThenCreateInvestigation(t *testing.T) {
 		t.Fatalf("extract status = %d; body: %s", extracted.Code, extracted.Body.String())
 	}
 
-	verified := test.request(http.MethodPost, "/api/v1/claims/verify-address", map[string]string{
-		"address": testTargetAddress,
+	verified := test.request(http.MethodPost, "/api/v1/claims/verify", map[string]any{
+		"selectedAddress": testTargetAddress,
+		"claims": []map[string]any{
+			{"kind": "address", "value": testTargetAddress, "role": "to", "confidence": 0.88},
+		},
 	}, token)
 	if verified.Code != http.StatusOK {
 		t.Fatalf("verify status = %d; body: %s", verified.Code, verified.Body.String())
 	}
-	assertJSONField(t, verified.Body.Bytes(), "status", "verified")
+	var verifiedBody struct {
+		PrefillAddress string `json:"prefillAddress"`
+	}
+	if err := json.Unmarshal(verified.Body.Bytes(), &verifiedBody); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if verifiedBody.PrefillAddress != testTargetAddress {
+		t.Fatalf("prefill = %q", verifiedBody.PrefillAddress)
+	}
 
 	// Prefill uses the existing Investigation create + target update path — no
 	// second create API. Owner still confirms by writing the Target.
@@ -227,6 +267,31 @@ func TestClaimExtractThenVerifyThenCreateInvestigation(t *testing.T) {
 		t.Fatalf("confirm target status = %d; body: %s", confirmed.Code, confirmed.Body.String())
 	}
 	assertJSONField(t, confirmed.Body.Bytes(), "address", testTargetAddress)
+}
+
+func TestVerifyClaimsRejectsSelectedAddressOutsideClaimSet(t *testing.T) {
+	test := newAuthHTTPTest(t)
+	cutoff := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
+	txHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	test.engine = gin.New()
+	apiRouter.ApiRouterWithClaimOptions(test.engine, analysis.Options{
+		Provider: successfulProvider(cutoff),
+	}, nil)
+	token := ownerToken(t, test.owner.ID)
+
+	// selectedAddress is a transfer endpoint but was never an address Claim.
+	response := test.request(http.MethodPost, "/api/v1/claims/verify", map[string]any{
+		"selectedAddress": testPeerAddress,
+		"claims": []map[string]any{
+			{"kind": "tx_hash", "value": txHash, "confidence": 0.9},
+			{"kind": "address", "value": testTargetAddress, "role": "from", "confidence": 0.9},
+			{"kind": "amount", "value": testLargeAmount, "asset": "USDT", "confidence": 0.9},
+		},
+	}, token)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; body: %s", response.Code, response.Body.String())
+	}
+	assertErrorCode(t, response, "validation_error")
 }
 
 func TestOwnerCanExtractJPEGAndRejectFakeMIME(t *testing.T) {

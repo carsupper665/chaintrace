@@ -213,7 +213,6 @@ func apiRouterWithOptions(
 		protected.POST("/investigations/:id/agent/summary", agentHandler.GenerateSummary)
 		protected.GET("/agent/models", agentHandler.ListModels)
 		protected.POST("/claims/extract", claimHandler.Extract)
-		protected.POST("/claims/verify-address", claimHandler.VerifyAddress)
 		protected.POST("/claims/verify", claimHandler.VerifyClaims)
 	}
 	auth := router.Group("/Authentication", unauthenticated)

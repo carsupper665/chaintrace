@@ -4,14 +4,12 @@ import {
   type ClaimErrorResponse,
   type ExtractClaimsResult,
   type PendingClaim,
-  type VerifyAddressResult,
   type VerifyClaimsResult,
 } from "./claim-contract.ts";
 
 export type {
   ExtractClaimsResult,
   PendingClaim,
-  VerifyAddressResult,
   VerifyClaimsResult,
 } from "./claim-contract.ts";
 
@@ -34,7 +32,7 @@ export class ClaimClientError extends Error {
   }
 }
 
-function stableErrorMessage(status: number, code: string) {
+export function stableErrorMessage(status: number, code: string) {
   if (code === "no_claim") {
     return "截圖中沒有可抽取的 Claim。";
   }
@@ -47,11 +45,11 @@ function stableErrorMessage(status: number, code: string) {
   if (code === "invalid_image" || code === "image_too_large") {
     return "請上傳有效且未超過大小限制的截圖。";
   }
-  if (code === "agent_unavailable" || status === 503 || status === 502) {
-    return "Claim 抽取服務目前無法使用。";
-  }
   if (code === "provider_unavailable") {
     return "鏈上驗證服務目前無法使用。";
+  }
+  if (code === "agent_unavailable" || status === 503 || status === 502) {
+    return "Claim 抽取服務目前無法使用。";
   }
   if (status === 401 || code === "unauthorized") {
     expireSession();
@@ -94,6 +92,19 @@ export function claimsFromExtractResult(
   }));
 }
 
+async function readClaimError(
+  response: Response,
+): Promise<ClaimClientError> {
+  const payload = await response.json().catch(() => null);
+  const error = (payload || {}) as ClaimErrorResponse;
+  const code = error.code || `HTTP_${response.status}`;
+  return new ClaimClientError(
+    stableErrorMessage(response.status, code),
+    response.status,
+    code,
+  );
+}
+
 export async function extractClaimsFromImage(
   file: File,
   fetchImpl: Fetch = fetch,
@@ -106,19 +117,10 @@ export async function extractClaimsFromImage(
     body,
     cache: "no-store",
   });
-  const payload = response.ok
-    ? await response.json()
-    : await response.json().catch(() => null);
   if (!response.ok) {
-    const error = (payload || {}) as ClaimErrorResponse;
-    const code = error.code || `HTTP_${response.status}`;
-    throw new ClaimClientError(
-      stableErrorMessage(response.status, code),
-      response.status,
-      code,
-    );
+    throw await readClaimError(response);
   }
-  const result = payload as ExtractClaimsResult;
+  const result = (await response.json()) as ExtractClaimsResult;
   if (
     result.network !== "tron" ||
     !Array.isArray(result.claims) ||
@@ -127,37 +129,6 @@ export async function extractClaimsFromImage(
     throw new ClaimClientError("截圖抽取結果無效。", 502, "malformed_claims");
   }
   return result;
-}
-
-/** @deprecated use extractClaimsFromImage */
-export const extractClaimsFromPng = extractClaimsFromImage;
-
-export async function verifyClaimAddress(
-  address: string,
-  fetchImpl: Fetch = fetch,
-): Promise<VerifyAddressResult> {
-  const response = await fetchImpl(`${CLAIMS_API_PATH}/verify-address`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ address: address.trim() }),
-    cache: "no-store",
-  });
-  const payload = response.ok
-    ? await response.json()
-    : await response.json().catch(() => null);
-  if (!response.ok) {
-    const error = (payload || {}) as ClaimErrorResponse;
-    const code = error.code || `HTTP_${response.status}`;
-    throw new ClaimClientError(
-      stableErrorMessage(response.status, code),
-      response.status,
-      code,
-    );
-  }
-  return payload as VerifyAddressResult;
 }
 
 export async function verifyClaims(
@@ -182,17 +153,8 @@ export async function verifyClaims(
     body: JSON.stringify(input),
     cache: "no-store",
   });
-  const payload = response.ok
-    ? await response.json()
-    : await response.json().catch(() => null);
   if (!response.ok) {
-    const error = (payload || {}) as ClaimErrorResponse;
-    const code = error.code || `HTTP_${response.status}`;
-    throw new ClaimClientError(
-      stableErrorMessage(response.status, code),
-      response.status,
-      code,
-    );
+    throw await readClaimError(response);
   }
-  return payload as VerifyClaimsResult;
+  return (await response.json()) as VerifyClaimsResult;
 }
