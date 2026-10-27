@@ -10,6 +10,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import pathlib
 import queue
 import subprocess
 import tempfile
@@ -93,6 +94,37 @@ def _conversation_text(messages: Sequence[Message]) -> str:
     if not parts:
         raise LLMError("Codex turn 沒有訊息")
     return "\n\n".join(parts)
+
+
+def _image_extension(mime_type: str) -> str:
+    normalized = (mime_type or "").strip().lower()
+    if normalized in {"image/jpeg", "image/jpg"}:
+        return ".jpg"
+    if normalized == "image/webp":
+        return ".webp"
+    return ".png"
+
+
+def _turn_input(messages: Sequence[Message], cwd: str) -> list[dict]:
+    """Build turn/start input: conversation text plus any user images as localImage."""
+    items: list[dict] = [{"type": "text", "text": _conversation_text(messages)}]
+    root = pathlib.Path(cwd)
+    index = 0
+    for message in messages:
+        if message.role != "user":
+            continue
+        for image in message.images:
+            index += 1
+            path = root / f"input-image-{index}{_image_extension(image.mime_type)}"
+            path.write_bytes(image.data)
+            items.append(
+                {
+                    "type": "localImage",
+                    "path": str(path.resolve()),
+                    "detail": "high",
+                }
+            )
+    return items
 
 
 class _AppServerProcess:
@@ -215,16 +247,15 @@ class CodexLLM:
         max_tokens: int = 4096,
     ) -> Reply:
         del max_tokens  # app-server owns the model output budget
-        if schema is not None:
-            raise LLMError("Codex app-server adapter 不支援結構化輸出")
-        if any(message.images for message in messages):
-            raise LLMError("Codex app-server adapter 不支援圖片輸入")
-
         token = self._state_token(messages)
         with self._lock:
             pending = self._pending.get(token) if token else None
         if pending is None:
-            return self._start(system, messages, tools)
+            return self._start(system, messages, tools, schema)
+        if schema is not None:
+            raise LLMError("Codex tool continuation 不支援改掛 outputSchema")
+        if any(message.images for message in messages):
+            raise LLMError("Codex tool continuation 不支援追加圖片")
         return self._continue(pending, messages)
 
     def stream(
@@ -247,7 +278,11 @@ class CodexLLM:
         )
 
     def _start(
-        self, system: str, messages: Sequence[Message], tools: Sequence[ToolSpec]
+        self,
+        system: str,
+        messages: Sequence[Message],
+        tools: Sequence[ToolSpec],
+        schema: dict | None = None,
     ) -> Reply:
         server = self._server_factory(self._command)
         pending = _PendingTurn(server=server, allowed_tools=frozenset(t.name for t in tools))
@@ -286,7 +321,7 @@ class CodexLLM:
                 raise LLMError("Codex app-server 沒有回傳 thread id")
             turn_params: dict = {
                 "threadId": thread_id,
-                "input": [{"type": "text", "text": _conversation_text(messages)}],
+                "input": _turn_input(messages, server.cwd),
                 "cwd": server.cwd,
                 "approvalPolicy": "never",
                 "sandboxPolicy": {"type": "readOnly"},
@@ -295,6 +330,8 @@ class CodexLLM:
                 turn_params["model"] = self._model
             if self._reasoning_effort:
                 turn_params["effort"] = self._reasoning_effort
+            if schema is not None:
+                turn_params["outputSchema"] = schema
             self._rpc(pending, 2, "turn/start", turn_params, deadline)
             return self._read_turn(pending, deadline)
         except Exception:

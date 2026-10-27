@@ -14,6 +14,15 @@ import {
   shouldApplyClaimResult,
   verifyClaims,
 } from "@/src/middle/claim-client";
+import {
+  claimConfirmAcceptedMessage,
+  claimConfirmNoAddressMessage,
+  claimConfirmPrompt,
+  claimConfirmRejectedMessage,
+  isAffirmativeClaimReply,
+  isNegativeClaimReply,
+  pickConfirmAddress,
+} from "@/src/middle/claim-confirm";
 import { validateTronAddress } from "@/src/middle/investigation-client";
 import type { AnalysisFlowResult } from "@/src/middle/investigation-client";
 import {
@@ -69,10 +78,18 @@ export function useChainTrace() {
   const [pendingClaims, setPendingClaims] = useState<PendingClaim[]>([]);
   const [selectedClaimId, setSelectedClaimId] = useState<string | null>(null);
   const [claimPreviewUrl, setClaimPreviewUrl] = useState<string | null>(null);
+  const [composerImage, setComposerImage] = useState<File | null>(null);
+  const [composerImageUrl, setComposerImageUrl] = useState<string | null>(null);
+  const [pendingAddressConfirmation, setPendingAddressConfirmation] =
+    useState<{
+      address: string;
+      claims: PendingClaim[];
+    } | null>(null);
   const [claimMessage, setClaimMessage] = useState("");
   const [claimError, setClaimError] = useState("");
   const [isClaimExtracting, setIsClaimExtracting] = useState(false);
   const [isClaimVerifying, setIsClaimVerifying] = useState(false);
+  const localMessageSerial = useRef(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [conversationError, setConversationError] = useState("");
   // Compatible models the Agent offers. Empty hides the picker; "" as the
@@ -763,21 +780,64 @@ export function useChainTrace() {
     });
   }
 
+  function replaceComposerImage(file: File | null) {
+    setComposerImage(file);
+    setComposerImageUrl((current) => {
+      if (current) URL.revokeObjectURL(current);
+      return file ? URL.createObjectURL(file) : null;
+    });
+  }
+
+  function stageComposerImage(file: File) {
+    if (active?.targetLocked || isClaimExtracting) return;
+    replaceComposerImage(file);
+  }
+
+  function clearComposerImage() {
+    replaceComposerImage(null);
+  }
+
+  function appendLocalChat(role: ChatMessage["role"], content: string) {
+    const message: ChatMessage = {
+      id: `local-${Date.now()}-${++localMessageSerial.current}`,
+      role,
+      content,
+      createdAt: new Date().toISOString(),
+    };
+    setChatMessages((current) => [...current, message]);
+    return message;
+  }
+
   async function extractClaimFromScreenshot(file: File) {
+    // Kept for older call sites; chat flow uses submitScreenshotForConfirm.
     if (!active || active.targetLocked || isClaimExtracting) return;
-    const requestInvestigationId = active.id;
-    const requestGeneration = ++claimRequestGeneration.current;
+    await submitScreenshotForConfirm(file, "");
+  }
+
+  async function submitScreenshotForConfirm(file: File, note: string) {
+    if (isClaimExtracting || active?.targetLocked) return;
+    const attempt = ++conversationAttempt.current;
     setClaimError("");
     setClaimMessage("");
     setPendingClaims([]);
     setSelectedClaimId(null);
+    setPendingAddressConfirmation(null);
     replaceClaimPreview(file);
+    replaceComposerImage(null);
     setIsClaimExtracting(true);
+    setIsRunning(true);
+    setConversationError("");
+    const userLine = note.trim() || "（已傳送截圖）";
+    appendLocalChat("user", userLine);
     try {
+      const investigationId =
+        active?.id || (await openInvestigationForCommand());
+      const requestGeneration = ++claimRequestGeneration.current;
       const result = await extractClaimsFromImage(file);
       if (
+        conversationAttempt.current !== attempt ||
         !shouldApplyClaimResult({
-          requestInvestigationId,
+          requestInvestigationId: investigationId,
           activeInvestigationId: activeIdRef.current,
           requestGeneration,
           currentGeneration: claimRequestGeneration.current,
@@ -787,30 +847,103 @@ export function useChainTrace() {
       }
       const claims = claimsFromExtractResult(result);
       setPendingClaims(claims);
-      const firstAddress = claims.find((claim) => claim.kind === "address");
-      setSelectedClaimId(firstAddress?.id ?? null);
-      setClaimMessage(
-        `已抽出 ${claims.length} 筆待驗證 Claim；請確認後再驗證鏈上結果。`,
-      );
+      const primary = pickConfirmAddress(claims);
+      setSelectedClaimId(primary?.id ?? null);
+      if (!primary) {
+        appendLocalChat("agent", claimConfirmNoAddressMessage());
+        return;
+      }
+      setPendingAddressConfirmation({ address: primary.value, claims });
+      appendLocalChat("agent", claimConfirmPrompt(primary.value));
     } catch (error) {
+      if (conversationAttempt.current !== attempt) return;
+      const message =
+        error instanceof ClaimClientError
+          ? error.message
+          : "無法辨識截圖，請稍後再試。";
+      setClaimError(message);
+      appendLocalChat("agent", message);
+    } finally {
+      if (conversationAttempt.current === attempt) {
+        setIsClaimExtracting(false);
+        setIsRunning(false);
+      }
+    }
+  }
+
+  async function acceptProposedAddress() {
+    if (!pendingAddressConfirmation || !active || isClaimVerifying) return;
+    const { address, claims } = pendingAddressConfirmation;
+    const requestInvestigationId = active.id;
+    const requestGeneration = ++claimRequestGeneration.current;
+    setIsClaimVerifying(true);
+    setClaimError("");
+    try {
+      const result = await verifyClaims({
+        selectedAddress: address,
+        claims: claims.map((claim) => ({
+          kind: claim.kind,
+          value: claim.value,
+          role: claim.role,
+          asset: claim.asset,
+          confidence: claim.confidence,
+        })),
+      });
       if (
         !shouldApplyClaimResult({
           requestInvestigationId,
           activeInvestigationId: activeIdRef.current,
           requestGeneration,
           currentGeneration: claimRequestGeneration.current,
+          requestClaimValue: address,
+          activeClaimValue: address,
         })
       ) {
         return;
       }
-      setClaimError(
-        error instanceof ClaimClientError
-          ? error.message
-          : "無法從截圖抽出 Claim，請稍後再試。",
+      setPendingClaims((current) =>
+        current.map((claim) => {
+          const match = result.results.find(
+            (item) => item.kind === claim.kind && item.value === claim.value,
+          );
+          return match
+            ? { ...claim, status: match.status, actual: match.actual }
+            : claim;
+        }),
       );
+      const confirmed =
+        result.prefillAddress && result.prefillAddress === address
+          ? result.prefillAddress
+          : (await validateTronAddress(address))
+            ? address
+            : "";
+      if (!confirmed) {
+        appendLocalChat(
+          "agent",
+          "這個地址沒通過鏈上確認，不能設成調查目標。請再傳截圖或貼上正確地址。",
+        );
+        setPendingAddressConfirmation(null);
+        return;
+      }
+      const updated = await setInvestigationTarget(active.id, confirmed);
+      setInvestigations((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      setAddressDraft(updated.address || confirmed);
+      setPendingAddressConfirmation(null);
+      appendLocalChat("agent", claimConfirmAcceptedMessage(confirmed));
+      setTargetMessage("TRON 調查目標已儲存，可以開始分析。");
+    } catch (error) {
+      const message =
+        error instanceof ClaimClientError ||
+        error instanceof InvestigationClientError
+          ? error.message
+          : "無法確認地址，請稍後再試。";
+      setClaimError(message);
+      appendLocalChat("agent", message);
     } finally {
       if (requestGeneration === claimRequestGeneration.current) {
-        setIsClaimExtracting(false);
+        setIsClaimVerifying(false);
       }
     }
   }
@@ -951,11 +1084,72 @@ export function useChainTrace() {
     claimRequestGeneration.current += 1;
     setPendingClaims([]);
     setSelectedClaimId(null);
+    setPendingAddressConfirmation(null);
     replaceClaimPreview(null);
+    replaceComposerImage(null);
     setClaimError("");
     setClaimMessage("");
     setIsClaimExtracting(false);
     setIsClaimVerifying(false);
+  }
+
+  async function sendComposer() {
+    if (isRunning || isConversationLoading || isWorkspaceMutating || isClaimExtracting) {
+      return;
+    }
+    const staged = composerImage;
+    const text = query.trim();
+    if (staged) {
+      setQuery("");
+      await submitScreenshotForConfirm(staged, text);
+      return;
+    }
+    if (!text) return;
+
+    if (pendingAddressConfirmation) {
+      appendLocalChat("user", text);
+      setQuery("");
+      if (isAffirmativeClaimReply(text)) {
+        await acceptProposedAddress();
+        return;
+      }
+      if (isNegativeClaimReply(text)) {
+        setPendingAddressConfirmation(null);
+        appendLocalChat("agent", claimConfirmRejectedMessage());
+        return;
+      }
+      // Owner may paste a corrected address instead of yes/no.
+      if (await validateTronAddress(text)) {
+        setPendingAddressConfirmation(null);
+        setAddressDraft(text);
+        if (active) {
+          try {
+            const updated = await setInvestigationTarget(active.id, text);
+            setInvestigations((current) =>
+              current.map((item) => (item.id === updated.id ? updated : item)),
+            );
+            setAddressDraft(updated.address || text);
+            appendLocalChat("agent", claimConfirmAcceptedMessage(text));
+            setTargetMessage("TRON 調查目標已儲存，可以開始分析。");
+          } catch (error) {
+            appendLocalChat(
+              "agent",
+              error instanceof InvestigationClientError
+                ? error.message
+                : "無法儲存地址，請稍後再試。",
+            );
+          }
+          return;
+        }
+      }
+      appendLocalChat(
+        "agent",
+        `先前提出的地址是 ${pendingAddressConfirmation.address}。請回「對」確認，或「不是」／直接貼上正確地址。`,
+      );
+      return;
+    }
+
+    await runInvestigation(text);
   }
 
   async function expandGraphNode(nodeId: string) {
@@ -1094,7 +1288,9 @@ export function useChainTrace() {
     claimRequestGeneration.current += 1;
     setPendingClaims([]);
     setSelectedClaimId(null);
+    setPendingAddressConfirmation(null);
     replaceClaimPreview(null);
+    replaceComposerImage(null);
     setClaimError("");
     setClaimMessage("");
     setIsClaimExtracting(false);
@@ -1642,6 +1838,9 @@ export function useChainTrace() {
     pendingClaims,
     selectedClaimId,
     claimPreviewUrl,
+    composerImage,
+    composerImageUrl,
+    pendingAddressConfirmation,
     claimMessage,
     claimError,
     isClaimExtracting,
@@ -1712,6 +1911,9 @@ export function useChainTrace() {
     adjustPanelWidth,
     confirmInvestigationAddress,
     extractClaimFromScreenshot,
+    stageComposerImage,
+    clearComposerImage,
+    sendComposer,
     verifyPendingClaim,
     updatePendingClaim,
     removePendingClaim,

@@ -22,12 +22,14 @@ TX_HASH = re.compile(r"^[0-9a-fA-F]{64}$")
 AMOUNT_PATTERN = re.compile(r"^[0-9]+$")
 MAX_CLAIMS = 10
 
+# OpenAI / Codex structured outputs require every property key to appear in
+# `required`. Optional claim fields therefore use an explicit null alternative.
 CLAIM_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["network", "claims"],
     "properties": {
-        "network": {"type": "string", "const": "tron"},
+        "network": {"type": "string", "enum": ["tron"]},
         "claims": {
             "type": "array",
             "minItems": 0,
@@ -35,12 +37,22 @@ CLAIM_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["kind", "value", "confidence"],
+                "required": ["kind", "value", "role", "asset", "confidence"],
                 "properties": {
                     "kind": {"type": "string", "enum": ["address", "tx_hash", "amount"]},
                     "value": {"type": "string"},
-                    "role": {"type": "string", "enum": ["from", "to", "unknown"]},
-                    "asset": {"type": "string", "const": "USDT"},
+                    "role": {
+                        "anyOf": [
+                            {"type": "string", "enum": ["from", "to", "unknown"]},
+                            {"type": "null"},
+                        ]
+                    },
+                    "asset": {
+                        "anyOf": [
+                            {"type": "string", "enum": ["USDT"]},
+                            {"type": "null"},
+                        ]
+                    },
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 },
             },

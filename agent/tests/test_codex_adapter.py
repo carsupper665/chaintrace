@@ -1,15 +1,17 @@
 from collections import deque
+from pathlib import Path
 
 import pytest
 
 from llm import from_env
 from llm.codex import CodexLLM, app_server_command
-from llm.types import LLMError, Message, ToolSpec
+from llm.types import ImageContent, LLMError, Message, ToolSpec
 
 
 class ScriptedServer:
-    def __init__(self, messages):
-        self.cwd = r"C:\empty-chaintrace-codex"
+    def __init__(self, messages, tmp_path=None):
+        self.cwd = str(tmp_path or Path("/tmp/empty-chaintrace-codex"))
+        Path(self.cwd).mkdir(parents=True, exist_ok=True)
         self.messages = deque(messages)
         self.sent = []
         self.closed = False
@@ -255,7 +257,45 @@ def test_codex_provider_does_not_require_api_key(monkeypatch):
     llm.close()
 
 
-def test_structured_output_is_rejected_explicitly():
-    llm = CodexLLM(server_factory=lambda _: None)
-    with pytest.raises(LLMError, match="不支援結構化輸出"):
-        llm.complete(system="S", messages=[Message("user", "查")], schema={"type": "object"})
+def test_structured_output_and_images_are_forwarded(tmp_path):
+    server = ScriptedServer(
+        opening_messages(
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "agentMessage",
+                        "text": '{"network":"tron","claims":[]}',
+                    }
+                },
+            },
+            {
+                "method": "turn/completed",
+                "params": {"turn": {"status": "completed", "items": []}},
+            },
+        ),
+        tmp_path=tmp_path,
+    )
+    llm = CodexLLM(server_factory=lambda _: server)
+    schema = {"type": "object", "properties": {"network": {"type": "string"}}}
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    reply = llm.complete(
+        system="Extract claims",
+        messages=[
+            Message(
+                "user",
+                "Extract TRON claims from this screenshot.",
+                images=(ImageContent(data=png, mime_type="image/png"),),
+            )
+        ],
+        schema=schema,
+    )
+    assert reply.text.startswith('{"network"')
+    turn_start = server.sent[3]
+    assert turn_start["method"] == "turn/start"
+    assert turn_start["params"]["outputSchema"] == schema
+    assert turn_start["params"]["input"][0]["type"] == "text"
+    image_input = turn_start["params"]["input"][1]
+    assert image_input["type"] == "localImage"
+    assert image_input["detail"] == "high"
+    assert Path(image_input["path"]).read_bytes() == png
