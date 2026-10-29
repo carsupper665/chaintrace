@@ -1,5 +1,7 @@
 # Learned risk scoring alongside the deterministic rules
 
+> Superseded in part by ADR-0018: the model now learns from addresses Tether later froze instead of flagging the unusual. Running alongside the rules, one shared feature implementation and the package boundary still hold.
+
 A second Risk Evaluator scores an Investigation Target with an unsupervised anomaly model trained on TRON USDT activity. It runs alongside the deterministic rules of ADR-0011 rather than replacing them: both scores are stored, and the published Risk Score stays the deterministic one until the learned score has been measured against known-bad and known-benign addresses. Which one gets published is a later decision, and it needs that measurement to make honestly.
 
 One implementation of the Address Feature Vector serves both training and scoring. Training runs offline on evidence this repository crawls itself; scoring runs inside a request. If the two computed features differently the model would be guessing in production with no symptom — it would still return a plausible number — so the same code, the same trailing window and the same transfer cap apply to both, and whether a given collection was truncated is itself a feature rather than a hidden bias.

@@ -55,28 +55,38 @@ def _moment(milliseconds) -> datetime:
     return datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
 
 
-def load(directory: pathlib.Path):
-    """讀一個爬蟲產出的資料夾，回傳 (地址清單, 特徵矩陣)。
+def histories(directory: pathlib.Path, cap: int | None = None):
+    """一個爬蟲產出的資料夾裡，每個地址的 (地址, 轉帳清單, 是否截斷)。
+
+    cap 給了就只留前 cap 筆，等同用 cap 當上限去爬：爬蟲照 TronGrid 回傳的順序存，
+    前 cap 筆就是上限 cap 時會拿到的那些。用比較大的上限爬的舊資料，因此可以跟
+    線上（Go 以模型的上限去抓）算出一樣的特徵。
 
     同一個地址出現多次時以最後一筆為準：續爬可能重抓過它，後面那次比較新。
     """
-    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    window_start = _moment(manifest["windowStartMs"])
-    window_end = _moment(manifest["windowEndMs"])
-
     records = {r["address"]: r for r in read_records(directory / "transfers.jsonl.gz")}
-    addresses, rows = [], []
     for address, record in records.items():
-        transfers = [
-            Transfer(t["from"], t["to"], int(t["value"]), _moment(t["ts"]))
-            for t in record["transfers"]
-        ]
+        raw = record["transfers"] if cap is None else record["transfers"][:cap]
+        truncated = record["truncated"] or (cap is not None and len(record["transfers"]) > cap)
+        yield address, [Transfer(t["from"], t["to"], int(t["value"]), _moment(t["ts"])) for t in raw], truncated
+
+
+def window(directory: pathlib.Path) -> tuple[datetime, datetime]:
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    return _moment(manifest["windowStartMs"]), _moment(manifest["windowEndMs"])
+
+
+def load(directory: pathlib.Path, cap: int | None = None):
+    """讀一個爬蟲產出的資料夾，回傳 (地址清單, 特徵矩陣)。"""
+    window_start, window_end = window(directory)
+    addresses, rows = [], []
+    for address, transfers, truncated in histories(directory, cap):
         features = compute(
             transfers,
             address,
             window_start=window_start,
             window_end=window_end,
-            truncated=record["truncated"],
+            truncated=truncated,
         )
         addresses.append(address)
         rows.append(vector(features))

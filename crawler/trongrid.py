@@ -11,6 +11,7 @@
 
 import hashlib
 import json
+import random
 import time
 import urllib.error
 import urllib.parse
@@ -21,6 +22,8 @@ USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 API_KEY_HEADER = "TRON-PRO-API-KEY"
 
 PAGE_LIMIT = 200
+# 分散抽樣時每頁取幾個地址。
+SPREAD_PER_PAGE = 5
 # 免費方案有速率限制。慢一點總比被擋在門外重跑一遍好。
 REQUEST_INTERVAL_SECONDS = 0.25
 MAX_RETRIES = 4
@@ -59,7 +62,10 @@ class TronGrid:
         self.calls = 0
 
     def _get(self, path: str, params: dict) -> dict:
-        """一次 GET，含速率控制與退避重試。429 與 5xx 值得重試，其他不值得。"""
+        """一次 GET，含速率控制與退避重試。429、403 與 5xx 值得重試，其他不值得。
+
+        403 也重試：多條連線並行時，TronGrid 超過頻率限制偶爾回 403 而不是 429，
+        實測幾秒後同一把 key 就恢復了。"""
         url = f"{self._base_url}{path}?{urllib.parse.urlencode(params)}"
         request = urllib.request.Request(
             url, headers={API_KEY_HEADER: self._api_key, "Accept": "application/json"}
@@ -70,7 +76,7 @@ class TronGrid:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     return json.load(response)
             except urllib.error.HTTPError as error:
-                if error.code != 429 and error.code < 500:
+                if error.code not in (403, 429) and error.code < 500:
                     raise TronGridError(f"TronGrid HTTP {error.code} on {path}") from error
                 time.sleep(2**attempt)
             except (urllib.error.URLError, TimeoutError):
@@ -121,6 +127,35 @@ class TronGrid:
                 break  # 頁面沒有往前推進，再問下去也是同一批
             cursor = oldest - 1
         return list(seen)[:count]
+
+    def addresses_at(self, draw: int, *, start_ms: int, end_ms: int, seed: int) -> list[str]:
+        """分散抽樣的第 draw 次：在 [start_ms, end_ms) 隨機挑一個時間點，從那一頁
+        Transfer 裡抽 SPREAD_PER_PAGE 個地址。
+
+        往回掃的 sample_addresses 只看得到抽樣起點前一刻的流量，抽到的地址全都
+        「剛好在那時活躍」。把時間點撒滿整個窗口，抽到的才是窗口內的一般地址。
+
+        每一次抽樣用 (seed, draw) 決定自己的亂數：彼此獨立，可以並行跑，同一個
+        manifest 重跑又會抽到同一批地址，續爬才接得上。
+        """
+        rng = random.Random(f"{seed}:{draw}")
+        page = self._get(
+            f"/v1/contracts/{USDT_CONTRACT}/events",
+            {
+                "event_name": "Transfer",
+                "only_confirmed": "true",
+                "limit": PAGE_LIMIT,
+                "order_by": "block_timestamp,desc",
+                "max_block_timestamp": rng.randrange(start_ms, end_ms),
+            },
+        )
+        records = page.get("data") or []
+        found = []
+        for record in rng.sample(records, min(SPREAD_PER_PAGE, len(records))):
+            side = (record.get("result") or {}).get(rng.choice(("from", "to")))
+            if side:
+                found.append(to_base58(side))
+        return found
 
     def transfers(self, address: str, start_ms: int, end_ms: int, cap: int):
         """抓一個地址在窗口內的 USDT 轉帳，最多 cap 筆。

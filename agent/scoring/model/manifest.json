@@ -1,8 +1,8 @@
 {
- "windowStartMs": 1785691388104,
- "windowEndMs": 1788283388104,
+ "kind": "gbdt",
  "windowDays": 30,
- "transferCap": 10000,
+ "transferCap": 1000,
+ "labelHorizonDays": 60,
  "featureNames": [
   "in_count_log",
   "out_count_log",
@@ -27,27 +27,48 @@
   "structuring_share",
   "truncated"
  ],
- "trainedOn": 997,
- "trainingDataHash": "f40ef9a8597df0720bf8b53be7100c01dbfd9376dc7fb95c2266fff19c622511",
- "blacklistedTop10Percent": 47.7,
- "blacklistedTop10PercentCI": [
-  40.2,
-  53.5
+ "windows": [
+  "2025-01-01",
+  "2025-03-01",
+  "2025-05-01",
+  "2025-07-01",
+  "2025-09-01",
+  "2025-11-01",
+  "2026-01-01",
+  "2026-03-01",
+  "2026-05-01",
+  "2026-07-01",
+  "2026-09-01"
  ],
- "exchangesInTop1Percent": 0,
+ "trainedOn": {
+  "suspicious": 2376,
+  "unlabeled": 8221
+ },
+ "temporalValidation": {
+  "gbdt": {
+   "rocAuc": 0.926,
+   "prAuc": 0.761
+  },
+  "gmm": {
+   "rocAuc": 0.796,
+   "prAuc": 0.48
+  }
+ },
+ "recencyOnlyRocAuc": 0.468,
+ "trainingDataHash": "3667eb150dc359643274a31e28ee0640d5133aa79fadd157ca546b07d1c3fa76",
+ "baselinePercentiles": {
+  "5": 0.00413362179766218,
+  "10": 0.005470970276089966,
+  "25": 0.009218731796223595,
+  "50": 0.02302865218583333,
+  "75": 0.08773201195380771,
+  "90": 0.3485328715822774,
+  "95": 0.5826127059894164,
+  "99": 0.8232141801910492
+ },
  "randomState": 20260902,
  "libraries": {
-  "numpy": "2.5.2",
-  "sklearn": "1.9.0"
- },
- "baselinePercentiles": {
-  "5": 0.3936822296782287,
-  "10": 0.3992264869265535,
-  "25": 0.4152719202821225,
-  "50": 0.44082653849238523,
-  "75": 0.4900294434801117,
-  "90": 0.5344743591861724,
-  "95": 0.5818891868325528,
-  "99": 0.6236470443366114
+  "numpy": "2.5.4",
+  "sklearn": "1.9.1"
  }
 }

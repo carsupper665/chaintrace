@@ -1,28 +1,27 @@
-"""訓練異常偵測模型，然後想辦法證明它是錯的。
+"""訓練學習式風險評分：兩種方法都訓練，用「舊窗口訓練、新窗口驗證」比較，留下比較好的。
 
-    python -m scoring.train.train --data ../crawler/train-data --labels ../crawler/label-data
+    python -m scoring.train.train --windows ../crawler/windows \\
+        --freezes ../crawler/freezes.json --unfreezes ../crawler/unfreezes.json
 
-模型本身十行就寫完。難的是第二件事：一個無監督模型永遠會吐出分數，看起來永遠
-很合理，所以唯一能分辨「抓到可疑」和「抓到錢多」的方法，是拿已知答案去對。
+資料：crawler/windows/<窗口結束日>/{control,positives}，每個窗口 30 天（見 crawler/README.md）。
+  可疑樣本  窗口結束後 LABEL_HORIZON_DAYS 天內被 Tether 凍結、之後沒被解凍的地址。
+  未標記    窗口內隨機時間點抽到的一般地址（crawl.py --spread）。不是「確定正常」。
+窗口內就已經被凍結的地址兩邊都不算。所有地址都只取前 TRANSFER_CAP 筆，跟線上
+Go 抓的一樣（analysis/learned_score.go 的 LearnedScoreTransferCap）。
 
-兩個指標，否決權比訊號大：
+驗證不用隨機切分：每次用比較舊的窗口訓練，測試下一個窗口，跟上線後「用過去的
+資料判斷現在的地址」是同一件事。測試窗口裡出現在訓練窗口的地址剔除。
 
-  訊號  被 Tether 凍結的地址應該明顯集中在異常排名前段（隨機是 10%）。用凍結
-        而不是 OFAC 制裁名單：實測 178 個制裁地址裡只有極少數在窗口內有 USDT
-        活動，它們被制裁後資金就凍住了，拿來測「行為偵測」等於在測「有沒有
-        活動」。被 Tether 凍結的地址是因為當下的違法行為才被凍的，凍結前必然
-        活躍，才是這個模型該抓的東西。
-  否決  已知的交易所不能佔滿最前面。佔滿了就表示模型學到的是規模不是行為，
-        這時候要回去改特徵，調閾值只是把結果藏起來。
+兩道否決，都在存模型之前：
 
-前處理用 QuantileTransformer，不是任何線性縮放。實測的差別大到不能忽略：改用
-RobustScaler 時，異常排名前 20 名裡有 12 個是已知交易所熱錢包；換成分位數轉換
-後是 0 個，交易所散落在第 83 到 277 名。
+  抽樣偏差  只用「最後一筆交易距離窗口結束多久」預測，各測試窗口的 ROC-AUC
+           平均必須在 0.5 ± RECENCY_TOLERANCE。從窗口結束往回掃抽樣的對照組
+           100% 在最後一小時內活躍，光這個數字就能拿到 0.998 —— 模型學到的會是
+           「抽樣時剛好活躍」，不是「可疑」。
+  訊號     勝出方法的平均 ROC-AUC 要達到 SIGNAL_THRESHOLD。不准為了好看調低。
 
-原因是線性縮放不改變倍率關係 —— 一個交易所在「轉帳筆數」上超出母體五十倍，
-縮放完還是五十倍，Isolation Forest 只要靠規模就能把它隔離出來。分位數轉換把每
-個特徵換成它在母體中的排名，最大值只是「分佈頂端」，有界，模型就必須看行為的
-形狀而不是大小。
+為什麼不再用 Isolation Forest：它找的是「不尋常」，不是「可疑」。在公平的對照組
+上它的 ROC-AUC 是 0.536，接近亂猜（docs/adr/0018）。
 """
 
 import argparse
@@ -30,215 +29,173 @@ import hashlib
 import json
 import pathlib
 import sys
+from datetime import timedelta
 
+import joblib
 import numpy as np
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import QuantileTransformer
+from sklearn.metrics import average_precision_score, roc_auc_score
 
-from scoring.features import FEATURE_NAMES
+from scoring.features import FEATURE_NAMES, compute, vector
+from scoring.learned import RANDOM_STATE, SCORERS
 from scoring.train import dataset
 
-RANDOM_STATE = 20260902
-# 驗收門檻，來自 docs/learned-risk-scoring-plan.md：壞地址落在前 10% 的比例
-# 要達到隨機（10%）的三倍左右。這個數字不准為了讓結果好看而調低。
-SIGNAL_THRESHOLD = 30.0
-# 拔靴法（bootstrap）重抽次數。標籤只有兩百來個，單一次算出來的訊號比例
-# 可能只是抽樣運氣，不是模型真的學到東西，要重抽很多次才看得出來晃多大。
-BOOTSTRAP_ITERATIONS = 10000
-# 兩個特徵相關到這個程度就是同一件事講兩次，模型會重複加權它。
-MAX_CORRELATION = 0.9
-# 我在原始候選清單外加的特徵，消融測試逼它證明自己值得。
-# 另一項「帳戶年齡」已經因為沒通過這個檢驗而被拿掉（見 features.py）。
-ABLATED = ("flow_match_share",)
+TRANSFER_CAP = 1000
+WINDOW_DAYS = 30
+LABEL_HORIZON_DAYS = 60
+SIGNAL_THRESHOLD = 0.75
+RECENCY_TOLERANCE = 0.1
+# 最終模型訓練時留下這比例的未標記地址不用，拿來算百分位數門檻（模型沒看過它們）。
+PERCENTILE_HOLDOUT = 0.2
+PERCENTILE_POINTS = (5, 10, 25, 50, 75, 90, 95, 99)
 
 
-def fit(rows, columns=None):
-    """回傳 (scaler, model, 用到的欄位索引)。columns 為 None 就用全部。"""
-    matrix = np.asarray(rows, dtype=float)
-    keep = list(range(matrix.shape[1])) if columns is None else columns
-    scaler = QuantileTransformer(
-        output_distribution="normal",
-        n_quantiles=min(500, len(matrix)),
-        random_state=RANDOM_STATE,
-    ).fit(matrix[:, keep])
-    model = IsolationForest(
-        n_estimators=300, random_state=RANDOM_STATE, contamination="auto"
-    ).fit(scaler.transform(matrix[:, keep]))
-    return scaler, model, keep
+def load_window(directory: pathlib.Path, freezes: dict, unfrozen: set) -> dict:
+    """{地址: (特徵向量, 是否可疑, 最後一筆交易距窗口結束幾小時)}。"""
+    rows = {}
+    for part in ("control", "positives"):
+        source = directory / part
+        start, end = dataset.window(source)
+        days = (end - start).days
+        if days != WINDOW_DAYS:
+            sys.exit(f"{source} 的窗口是 {days} 天，模型要求 {WINDOW_DAYS} 天")
+        end_ms = end.timestamp() * 1000
+        horizon_ms = end_ms + timedelta(days=LABEL_HORIZON_DAYS).total_seconds() * 1000
+        for address, transfers, truncated in dataset.histories(source, TRANSFER_CAP):
+            own = [t for t in transfers if address in (t.from_address, t.to_address)]
+            frozen_at = freezes.get(address, 0)
+            if not own or 0 < frozen_at <= end_ms or address in unfrozen:
+                continue
+            features = compute(transfers, address, window_start=start, window_end=end, truncated=truncated)
+            hours = (end - max(t.timestamp for t in own)).total_seconds() / 3600
+            rows[address] = (vector(features), end_ms < frozen_at <= horizon_ms, hours)
+    return rows
 
 
-def anomaly(scaler, model, keep, rows):
-    """越大越異常。sklearn 的 score_samples 是反過來的，這裡轉正。"""
-    matrix = np.asarray(rows, dtype=float)[:, keep]
-    return -model.score_samples(scaler.transform(matrix))
+def split(rows: dict):
+    features = np.array([v[0] for v in rows.values()])
+    labels = np.array([v[1] for v in rows.values()])
+    return features[labels], features[~labels]
 
 
-def signal(baseline_scores, target_scores) -> float:
-    """目標分數落在基準分佈前 10% 的比例。隨機的話會是 0.10。"""
-    threshold = np.quantile(baseline_scores, 0.90)
-    return float(np.mean(target_scores >= threshold)) if len(target_scores) else 0.0
+def evaluate(windows: list, data: dict) -> dict:
+    """每個窗口（從第三個起）都用它之前的窗口訓練、拿它測試。"""
+    results = {scorer.kind: [] for scorer in SCORERS}
+    results["recency"] = []
+    for i in range(2, len(windows)):
+        train = {}
+        for name in windows[:i]:
+            train.update(data[name])
+        test = {a: v for a, v in data[windows[i]].items() if a not in train}
+        suspicious, unlabeled = split(train)
+        rows = np.array([v[0] for v in test.values()])
+        labels = np.array([v[1] for v in test.values()])
+        recency = roc_auc_score(labels, -np.array([v[2] for v in test.values()]))
+        results["recency"].append(recency)
+        line = f"  {', '.join(windows[:i])} -> {windows[i]}  ({labels.sum()} 可疑 / {len(labels)})  最後交易時間 {recency:.3f}"
+        for scorer in SCORERS:
+            scores = scorer().fit(suspicious, unlabeled).score(rows)
+            roc, pr = roc_auc_score(labels, scores), average_precision_score(labels, scores)
+            results[scorer.kind].append((roc, pr))
+            line += f"  {scorer.kind} {roc:.3f}/{pr:.3f}"
+        print(line, flush=True)
+    return results
 
 
-def bootstrap_signal_ci(base_scores, target_scores, iterations=BOOTSTRAP_ITERATIONS, seed=RANDOM_STATE):
-    """對 signal() 那個比例做拔靴法，回傳 95% 信心區間 (下界, 上界)。
-
-    重抽基準跟目標各自的分數很多次，每次都重算一次比例，看晃多大 ——
-    區間夠窄，數字才站得住腳；區間寬到蓋過門檻，就只是抽樣運氣。
-    """
-    rng = np.random.default_rng(seed)
-    base = np.asarray(base_scores)
-    target = np.asarray(target_scores)
-    hits = np.empty(iterations)
-    for i in range(iterations):
-        hits[i] = signal(
-            rng.choice(base, size=len(base), replace=True),
-            rng.choice(target, size=len(target), replace=True),
-        )
-    return float(np.percentile(hits, 2.5)), float(np.percentile(hits, 97.5))
-
-
-def correlated_pairs(rows) -> list[tuple[float, str, str]]:
-    """相關性超標的特徵對。開訓前一定要看：兩個講同一件事的特徵會讓那件事
-    拿到雙倍權重，模型就開始照規模排名而不是照行為。"""
-    matrix = np.corrcoef(np.asarray(rows, dtype=float), rowvar=False)
-    return sorted(
-        (
-            (abs(matrix[i, j]), FEATURE_NAMES[i], FEATURE_NAMES[j])
-            for i in range(len(FEATURE_NAMES))
-            for j in range(i + 1, len(FEATURE_NAMES))
-            if abs(matrix[i, j]) > MAX_CORRELATION
-        ),
-        reverse=True,
-    )
-
-
-def report(title, addresses, scores, labels, baseline_scores):
-    kinds = {}
-    for address, score in zip(addresses, scores):
-        kinds.setdefault(labels.get(address, "unlabelled"), []).append(score)
-    print(f"\n{title}")
-    for kind, values in sorted(kinds.items()):
-        print(
-            f"  {kind:12} n={len(values):4d}  中位數 {np.median(values):+.4f}"
-            f"  落在基準前 10% 的比例 {signal(baseline_scores, np.array(values)) * 100:5.1f}%"
-        )
+def data_hash(paths) -> str:
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="訓練並驗證學習式風險評分")
-    parser.add_argument("--data", type=pathlib.Path, required=True, help="訓練資料夾")
-    parser.add_argument("--labels", type=pathlib.Path, required=True, help="標籤資料夾")
+    parser = argparse.ArgumentParser(description="訓練並比較兩種學習式風險評分")
+    parser.add_argument("--windows", type=pathlib.Path, required=True)
+    parser.add_argument("--freezes", type=pathlib.Path, required=True, help="crawler/freezes.py 的輸出")
+    parser.add_argument("--unfreezes", type=pathlib.Path, required=True, help="被解凍的地址，排除在可疑樣本外")
     parser.add_argument("--out", type=pathlib.Path, default=pathlib.Path("scoring/model"))
     arguments = parser.parse_args()
 
-    print("讀訓練資料…", flush=True)
-    base_addresses, base_rows = dataset.load(arguments.data)
-    print(f"  {len(base_addresses)} 個地址")
+    freezes = json.loads(arguments.freezes.read_text(encoding="utf-8"))
+    unfrozen = set(json.loads(arguments.unfreezes.read_text(encoding="utf-8")))
+    windows = sorted(
+        d.name for d in arguments.windows.iterdir()
+        if (d / "control" / "transfers.jsonl.gz").exists() and (d / "positives" / "transfers.jsonl.gz").exists()
+    )
+    if len(windows) < 3:
+        sys.exit(f"至少要 3 個窗口才能做時間外推驗證，只找到 {windows}")
 
-    print("讀標籤資料…", flush=True)
-    label_addresses, label_rows = dataset.load(arguments.labels)
-    labels = json.loads((arguments.labels / "labels.json").read_text(encoding="utf-8"))
-    labels = {a: ("exchange" if v.startswith("exchange") else v) for a, v in labels.items()}
-    print(f"  {len(label_addresses)} 個地址")
+    print("讀資料…", flush=True)
+    data = {}
+    for name in windows:
+        data[name] = load_window(arguments.windows / name, freezes, unfrozen)
+        suspicious = sum(v[1] for v in data[name].values())
+        print(f"  {name}: {suspicious} 可疑, {len(data[name]) - suspicious} 未標記", flush=True)
 
-    overlapping = correlated_pairs(base_rows)
-    if overlapping:
-        print(f"\n相關性超過 {MAX_CORRELATION} 的特徵對，要砍掉一邊：")
-        for value, left, right in overlapping:
-            print(f"  {value:.3f}  {left} / {right}")
-        sys.exit(1)
-    print(f"相關性檢查通過：沒有任何一對超過 {MAX_CORRELATION}")
-
-    # 基準只用抽樣來的一般地址訓練。把標籤地址也餵進去，模型就會把它們當成
-    # 「正常」的一部分，等於先偷看答案。
-    scaler, model, keep = fit(base_rows)
-    base_scores = anomaly(scaler, model, keep, base_rows)
-    label_scores = anomaly(scaler, model, keep, label_rows)
-
-    report("各類別的異常分數", label_addresses, label_scores, labels, base_scores)
-
-    def scores_for(kind):
-        return np.array(
-            [s for a, s in zip(label_addresses, label_scores) if labels.get(a) == kind]
-        )
+    print("\n舊窗口訓練 → 新窗口驗證（ROC-AUC/PR-AUC）", flush=True)
+    results = evaluate(windows, data)
+    recency = float(np.mean(results["recency"]))
+    summary = {
+        scorer.kind: {
+            "rocAuc": round(float(np.mean([r[0] for r in results[scorer.kind]])), 3),
+            "prAuc": round(float(np.mean([r[1] for r in results[scorer.kind]])), 3),
+        }
+        for scorer in SCORERS
+    }
+    winner = max(SCORERS, key=lambda scorer: summary[scorer.kind]["rocAuc"])
 
     print("\n" + "=" * 62)
-    # 主要指標用「被 Tether 凍結」而不是「被 OFAC 制裁」：實測 178 個制裁地址
-    # 裡只有 3 個在窗口內有 USDT 活動，被制裁後資金就凍住了。它們的高分只證明
-    # 模型會把「沒有活動」判成異常，那是另一個問題，不是行為偵測。
-    hit = signal(base_scores, scores_for("blacklisted")) * 100
-    print(f"訊號  被凍結地址落在前 10%：{hit:.1f}%   （隨機 10%，目標 ~30%）")
-    ci_low, ci_high = bootstrap_signal_ci(base_scores, scores_for("blacklisted"))
-    print(
-        f"      95% 信心區間：{ci_low * 100:.1f}% ~ {ci_high * 100:.1f}%"
-        f"（拔靴法重抽 {BOOTSTRAP_ITERATIONS} 次）"
-    )
-    if ci_low * 100 < SIGNAL_THRESHOLD:
-        print(f"      注意：區間下界低於門檻 {SIGNAL_THRESHOLD}%，這個訊號還不夠穩")
-    print(
-        f"      （參考：被制裁地址 {signal(base_scores, scores_for('sanctioned')) * 100:.1f}%，"
-        "但它們 98% 休眠，這個數字只反映「沒有活動也算異常」）"
-    )
-
-    pool = list(zip(base_addresses, base_scores)) + list(zip(label_addresses, label_scores))
-    pool.sort(key=lambda item: item[1], reverse=True)
-    top = pool[: max(len(pool) // 100, 1)]
-    exchanges_on_top = sum(1 for a, _ in top if labels.get(a) == "exchange")
-    print(
-        f"否決  前 1%（{len(top)} 個）裡的交易所：{exchanges_on_top} 個"
-        f"（{exchanges_on_top / len(top) * 100:.0f}%，必須不過半）"
-    )
+    print(f"抽樣偏差  只用最後交易時間：平均 ROC-AUC {recency:.3f}（必須在 0.5 ± {RECENCY_TOLERANCE}）")
+    for kind, values in summary.items():
+        print(f"{kind:9} 平均 ROC-AUC {values['rocAuc']:.3f}  PR-AUC {values['prAuc']:.3f}")
+    print(f"勝出      {winner.kind}（門檻 ROC-AUC {SIGNAL_THRESHOLD}）")
     print("=" * 62)
-    print("\n異常排名最前面 10 個：")
-    for address, score in pool[:10]:
-        print(f"  {score:+.4f}  {address}  {labels.get(address, '—')}")
-
-    print("\n消融測試（拿掉我自己加的特徵，看訊號掉多少）：")
-    columns = [i for i, n in enumerate(FEATURE_NAMES) if n not in ABLATED]
-    a_scaler, a_model, a_keep = fit(base_rows, columns)
-    a_base = anomaly(a_scaler, a_model, a_keep, base_rows)
-    a_hit = signal(a_base, anomaly(a_scaler, a_model, a_keep, [
-        r for a, r in zip(label_addresses, label_rows) if labels.get(a) == "blacklisted"
-    ])) * 100
-    print(f"  少了 {', '.join(ABLATED)}：{a_hit:.1f}%（完整版 {hit:.1f}%）")
-
-    passed = hit >= SIGNAL_THRESHOLD and exchanges_on_top <= len(top) / 2
-    if not passed:
-        print("\n>>> Phase 2 驗收未過。回頭改特徵，不要調閾值。")
+    if abs(recency - 0.5) > RECENCY_TOLERANCE or summary[winner.kind]["rocAuc"] < SIGNAL_THRESHOLD:
+        print("\n>>> 驗收未過。回頭查資料與特徵，不要調門檻。")
         sys.exit(1)
 
-    arguments.out.mkdir(parents=True, exist_ok=True)
-    import joblib
+    # 最終模型用全部窗口訓練，但留一部分未標記地址不給它看，拿來算百分位數：
+    # 拿訓練過的資料算，門檻會被壓低，線上每個地址看起來都比一般地址可疑。
+    everything = {}
+    for name in windows:
+        everything.update(data[name])
+    suspicious, unlabeled = split(everything)
+    rng = np.random.default_rng(RANDOM_STATE)
+    held = rng.random(len(unlabeled)) < PERCENTILE_HOLDOUT
+    model = winner().fit(suspicious, unlabeled[~held])
+    baseline = model.score(unlabeled[held])
+    percentiles = {str(p): float(np.percentile(baseline, p)) for p in PERCENTILE_POINTS}
 
+    arguments.out.mkdir(parents=True, exist_ok=True)
     # 特徵名稱跟模型存在一起。只存模型的話，日後特徵順序一改，線上會拿
     # 「轉帳筆數」當「金額中位數」算，而且照樣吐出一個看起來正常的分數。
-    joblib.dump(
-        {"scaler": scaler, "model": model, "features": list(FEATURE_NAMES), "keep": keep},
-        arguments.out / "model.joblib",
-    )
+    joblib.dump({"model": model, "features": list(FEATURE_NAMES)}, arguments.out / "model.joblib")
+    files = [arguments.freezes, arguments.unfreezes] + [
+        arguments.windows / name / part / "transfers.jsonl.gz" for name in windows for part in ("control", "positives")
+    ]
     (arguments.out / "manifest.json").write_text(
         json.dumps(
             {
-                **dataset.describe(arguments.data),
-                "trainedOn": len(base_addresses),
-                "trainingDataHash": hashlib.sha256(
-                    (arguments.data / "transfers.jsonl.gz").read_bytes()
-                ).hexdigest(),
-                "blacklistedTop10Percent": round(hit, 1),
-                "blacklistedTop10PercentCI": [round(ci_low * 100, 1), round(ci_high * 100, 1)],
-                "exchangesInTop1Percent": exchanges_on_top,
+                "kind": winner.kind,
+                "windowDays": WINDOW_DAYS,
+                "transferCap": TRANSFER_CAP,
+                "labelHorizonDays": LABEL_HORIZON_DAYS,
+                "featureNames": list(FEATURE_NAMES),
+                "windows": windows,
+                "trainedOn": {"suspicious": int(len(suspicious)), "unlabeled": int((~held).sum())},
+                "temporalValidation": summary,
+                "recencyOnlyRocAuc": round(recency, 3),
+                "trainingDataHash": data_hash(files),
+                "baselinePercentiles": percentiles,
                 "randomState": RANDOM_STATE,
-                "libraries": {
-                    "numpy": np.__version__,
-                    "sklearn": __import__("sklearn").__version__,
-                },
+                "libraries": {"numpy": np.__version__, "sklearn": __import__("sklearn").__version__},
             },
             ensure_ascii=False,
             indent=1,
         ),
         encoding="utf-8",
     )
-    print(f"\n>>> 驗收通過。模型存到 {arguments.out}")
+    print(f"\n>>> 驗收通過，採用 {winner.kind}。模型存到 {arguments.out}")
 
 
 if __name__ == "__main__":

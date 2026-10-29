@@ -26,12 +26,12 @@ class ScoreRequest(BaseModel):
 
 class ScoreResponse(BaseModel):
     score: float
-    """原始、無界的異常分數。留著給以後重訓/比較用，不是給人看的。"""
+    """模型的原始分數，越大越像學到的可疑行為。尺度取決於 manifest 的 kind（GBDT 是
+    0–1 的排序分數，GMM 是 log 機率密度），留著給以後重訓/比較用，不是給人看的。"""
 
     percentile: float
-    """score 換算成「贏過基準母體（訓練時的 997 個一般地址）幾 % 」，0-100，
-    對 baselinePercentiles 門檻內插算出來的。這才是人看得懂的數字（見
-    docs/learned-risk-scoring-plan.md Phase 4）。"""
+    """score 換算成「比幾 % 的一般地址更像可疑行為」，0-100，對 baselinePercentiles
+    門檻內插算出來的。這才是人看得懂的數字。"""
 
     model_version: str
     """model/manifest.json 的 trainingDataHash。Phase 4 拿它分辨一筆分數是哪個

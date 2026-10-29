@@ -4,8 +4,8 @@
 共用密鑰只是確認來源是 Go，不是授權機制），這裡不另外做授權判斷。
 
 模型在這個模組被 import 時載入一次，不是每個請求都重讀 model.joblib
-（見 docs/adr/0015：訓練與線上打分共用 features.py，這裡共用的是訓練出來的
-scaler/model 本身）。
+（見 docs/adr/0015、0018：訓練與線上打分共用 features.py，這裡共用的是訓練出來的
+模型本身 —— scoring/learned.py 的其中一種，由訓練時的時間外推驗證選出）。
 """
 
 import json
@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 import joblib
 import numpy as np
+import sklearn
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 
@@ -23,31 +24,33 @@ from scoring.schemas import ScoreRequest, ScoreResponse, TransferIn
 MODEL_DIR = pathlib.Path(__file__).resolve().parent / "model"
 
 _artifact = joblib.load(MODEL_DIR / "model.joblib")
-_scaler = _artifact["scaler"]
 _model = _artifact["model"]
-_keep = _artifact["keep"]
 
 _manifest = json.loads((MODEL_DIR / "manifest.json").read_text(encoding="utf-8"))
 MODEL_VERSION = _manifest["trainingDataHash"]
 
 if "baselinePercentiles" not in _manifest:
     # 沒有這個門檻表，percentile_of() 就只能亂猜。寧可線上啟動就炸，也不要
-    # 悄悄吐一個沒有基準支撐的百分位數字出去——見 scoring/train/percentiles.py。
-    raise RuntimeError(
-        "manifest.json 缺 baselinePercentiles；先跑 "
-        "python -m scoring.train.percentiles --data <基準資料夾> 補上"
-    )
+    # 悄悄吐一個沒有基準支撐的百分位數字出去——門檻由 scoring/train/train.py 寫入。
+    raise RuntimeError("manifest.json 缺 baselinePercentiles；重跑 scoring/train/train.py")
 _PERCENTILE_POINTS = sorted(float(p) for p in _manifest["baselinePercentiles"])
 _PERCENTILE_CUTOFFS = [_manifest["baselinePercentiles"][str(int(p))] for p in _PERCENTILE_POINTS]
 
 
 def percentile_of(score: float) -> float:
-    """score 贏過基準母體幾 %，對 baselinePercentiles 的門檻點做內插。
+    """score 贏過一般地址（訓練時沒看過的未標記地址）幾 %，對 baselinePercentiles 的門檻點做內插。
 
     超出兩端就夾到 0/100——基準只在 [P5, P99] 之間量過，外插沒有意義。
     """
     return float(np.clip(np.interp(score, _PERCENTILE_CUTOFFS, _PERCENTILE_POINTS), 0.0, 100.0))
 
+
+if _manifest["libraries"]["sklearn"] != sklearn.__version__:
+    # pickle 起來的模型換了 scikit-learn 版本，可能照常載入卻算出不一樣的分數。
+    raise RuntimeError(
+        f"model.joblib was trained with scikit-learn {_manifest['libraries']['sklearn']}, "
+        f"this process runs {sklearn.__version__}; install the pinned version or retrain"
+    )
 
 if tuple(_artifact["features"]) != FEATURE_NAMES:
     # features.py 改過順序或增刪欄位，但沒有重新訓練模型：硬停在啟動時，好過
@@ -91,9 +94,8 @@ def compute_vector(payload: ScoreRequest) -> tuple[float, ...]:
 
 
 def score_request(payload: ScoreRequest) -> float:
-    """路由的唯一入口：一個請求變成一個原始分數。"""
-    matrix = np.asarray([compute_vector(payload)], dtype=float)[:, _keep]
-    return float(-_model.score_samples(_scaler.transform(matrix))[0])
+    """路由的唯一入口：一個請求變成一個分數，越大越像學到的可疑行為。"""
+    return float(_model.score([compute_vector(payload)])[0])
 
 
 @router.post("/v1/score")

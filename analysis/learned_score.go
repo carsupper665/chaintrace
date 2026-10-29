@@ -15,7 +15,7 @@ const (
 	// whatever Analysis Scope the Owner picked for the rules-based graph
 	// traversal (ADR-0015: "Scoring reads the Target's own transfer history
 	// at the model's cap, not the Analysis Dataset").
-	LearnedScoreTransferCap = 10000
+	LearnedScoreTransferCap = 1000
 	// learnedScoreTimeout bounds fetching up to LearnedScoreTransferCap
 	// transfers (paginated) plus one HTTP call to the scorer, as a single
 	// sub-operation well under analysisRunTimeout (30m). A busy address can
@@ -51,7 +51,8 @@ type LearnedScoreInput struct {
 	Truncated     bool
 }
 
-// LearnedScoreResult is the unsupervised model's anomaly score. Source
+// LearnedScoreResult is the learned model's score: how much the Target
+// behaves like addresses Tether later froze (ADR-0018). Source
 // identifies which trained artifact produced it (the model manifest's
 // trainingDataHash), for later comparison work (Phase 4).
 type LearnedScoreResult struct {

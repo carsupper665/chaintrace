@@ -711,7 +711,7 @@ button {
 
 .case-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   border: 1px solid var(--line);
   border-radius: 11px;
   background: rgba(255, 255, 255, 0.018);
@@ -1123,17 +1123,6 @@ button {
   color: #65736b;
   font-size: 8px;
   white-space: nowrap;
-}
-
-/* Unvalidated (ADR-0015: no known-bad/known-benign measurement yet), so this
-   is deliberately plain text — no risk-tone color, unlike the rules score. */
-.mini-stat-secondary {
-  margin-top: 3px;
-  color: #65736b;
-  font-size: 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .total-flow-stat .mini-stat-value {
@@ -3918,7 +3907,6 @@ button {
 .theme-light .address-block small,
 .theme-light .mini-stat small,
 .theme-light .mini-stat span,
-.theme-light .mini-stat-secondary,
 .theme-light .agent-intro p,
 .theme-light .agent-step small,
 .theme-light .card-heading small,

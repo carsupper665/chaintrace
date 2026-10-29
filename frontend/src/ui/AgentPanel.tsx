@@ -39,6 +39,10 @@ function ActiveAgentPanel({ ui }: { ui: ChainTraceController }) {
     : typeof active.risk === "number"
       ? active.risk
       : null;
+  const learned =
+    assessment?.learnedScorePercentile != null
+      ? Math.round(assessment.learnedScorePercentile)
+      : null;
   const hasStableResult = Boolean(active.currentResult);
   const relatedNodes = currentResult?.metrics.relatedNodes ?? active.relatedNodes;
   const transferCount =
@@ -249,23 +253,34 @@ function ActiveAgentPanel({ ui }: { ui: ChainTraceController }) {
                     : "/ 100"}
               </span>
             </div>
-            {assessment?.learnedScorePercentile != null && (
-              <div
-                className="mini-stat-secondary"
-                title={
-                  assessment.learnedScoreSource
-                    ? `模型來源：${assessment.learnedScoreSource}`
-                    : undefined
+          </div>
+          <div
+            className="mini-stat"
+            title={
+              assessment?.learnedScoreSource
+                ? `模型來源：${assessment.learnedScoreSource}`
+                : undefined
+            }
+          >
+            <small>可疑行為相似度</small>
+            <div className="mini-stat-value">
+              <strong
+                className={
+                  learned === null
+                    ? "risk-text risk-pending"
+                    : `risk-text risk-${getRiskTone(learned)}`
                 }
               >
-                行為異常度：
-                <span
-                  className={`risk-text risk-${getRiskTone(assessment.learnedScorePercentile)}`}
-                >
-                  贏過 {Math.round(assessment.learnedScorePercentile)}% 的一般地址
-                </span>
-              </div>
-            )}
+                {learned ?? "—"}
+              </strong>
+              <span>
+                {learned === null
+                  ? hasStableResult
+                    ? "未提供"
+                    : "待分析"
+                  : "/ 100 · 比一般地址更像可疑"}
+              </span>
+            </div>
           </div>
           <div className="mini-stat">
             <small>關聯節點</small>

@@ -115,7 +115,7 @@ The fixed set of numeric measures computed for one address from its own Transfer
 _Avoid_: Metrics, statistics
 
 **Learned Risk Score**:
-An anomaly score produced for an Investigation Target by a trained model from its Address Feature Vector. It says how unlike ordinary USDT activity the address looks; it carries no reasons and is not the published Risk Score.
+A score produced for an Investigation Target by a trained model from its Address Feature Vector. It says how much the address behaves like addresses Tether froze after a past window; it carries no reasons and is not the published Risk Score.
 _Avoid_: Risk Score, AI score
 
 **Interpretation**:

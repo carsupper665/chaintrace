@@ -52,7 +52,18 @@ tail -f crawl.log
 | --- | --- | --- |
 | `--addresses` | 1000 | 總目標地址數（含已完成的） |
 | `--out` | `./data` | 輸出資料夾 |
-| `--interval` | 0.25 | 每次 API 呼叫間隔秒數。網路快可以調小，被限流就調大 |
+| `--interval` | 0.25 | 每次 API 呼叫間隔秒數（每條連線各自計算）。網路快可以調小，被限流就調大 |
+| `--workers-per-key` | 1 | 每把 key 同時開幾條連線。瓶頸是網路延遲時調大能直接加速 |
+| `--spread` | 關 | 在整個窗口內隨機挑時間點抽樣。**驗證用的對照組要用這個**：預設的往回掃只抽得到窗口最後一刻剛好活躍的地址 |
+| `--from-file` | — | 改爬檔案裡列出的地址（一行一個），例如標籤集 |
+
+多把 API key 用逗號隔開，抽樣和抓轉帳都會用全部的 key 並行：
+
+```
+TRONGRID_API_KEY=key1,key2,key3
+```
+
+`freezes.py` 抓 Tether 的完整凍結名單（含凍結時間），給驗證用。
 
 ## 中斷了怎麼辦
 
@@ -102,7 +113,28 @@ data/
 所以瓶頸是延遲，不是間隔 —— 換一台離 TronGrid 近、延遲低的機器，並把
 `--interval` 調到 0.1，估計可以壓到 1.5～2 小時。
 
-## 拿回來之後
+## 訓練資料：多個時間窗口（見 docs/adr/0018）
 
-把 `data/` 整個複製回開發機，放到 ChainTrace 專案下的 `agent/scoring/train/data/`，
-就可以進入訓練階段（Phase 2）。
+每個窗口放在 `windows/<窗口結束日>/` 底下，裡面有兩批資料，**用同一個窗口**：
+
+- `control/`：窗口內隨機時間點抽到的一般地址
+- `positives/`：窗口結束後 60 天內被 Tether 凍結的地址
+
+```bash
+python3 freezes.py --out freezes.json        # 凍結名單，含時間
+# unfreezes.json：RemovedBlackList 事件，被解凍的地址不算可疑
+
+E=2026-09-01                                  # 窗口結束日，要早於今天至少 60 天
+mkdir -p windows/$E/control windows/$E/positives
+# 兩個資料夾各放一份 manifest.json：windowStartMs = E - 30 天、windowEndMs = sampleStartMs = E、transferCap = 1000
+python3 crawl.py --spread --addresses 1000 --workers-per-key 6 --out windows/$E/control
+# positives.txt：freezes.json 裡凍結時間落在 (E, E+60 天] 的地址
+python3 crawl.py --from-file windows/$E/positives.txt --workers-per-key 6 --out windows/$E/positives
+```
+
+至少要 3 個窗口。然後在 `agent/` 底下訓練：
+
+```bash
+python -m scoring.train.train --windows ../crawler/windows \
+    --freezes ../crawler/freezes.json --unfreezes ../crawler/unfreezes.json
+```

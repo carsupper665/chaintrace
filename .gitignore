@@ -33,3 +33,13 @@ crawler/train-data/
 crawler/*.jsonl
 crawler/.env
 crawler/label-data/
+crawler/control-data/
+crawler/positive-data/
+crawler/neighbour-data/
+crawler/dense-data/
+crawler/windows/
+crawler/freezes.json
+crawler/unfreezes.json
+crawler/neighbours.json
+crawler/*.txt
+crawler/*.log

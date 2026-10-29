@@ -72,9 +72,10 @@ type Assessment struct {
 	ReasonsJSON         string `gorm:"type:text;not null"`
 	NodeAssessmentsJSON string `gorm:"type:text;not null"`
 	Source              string `gorm:"size:64;not null"`
-	// LearnedScore is the unsupervised model's anomaly score (ADR-0015), stored
-	// alongside Score rather than in place of it. It is an unbounded signed
-	// float, not a 0-100 rules-style score, and nil whenever no scorer was
+	// LearnedScore is the learned model's raw score (ADR-0015, ADR-0018), stored
+	// alongside Score rather than in place of it. Its scale depends on the model
+	// kind in the manifest — not a 0-100 rules-style score — and it is nil
+	// whenever no scorer was
 	// configured or the attempt failed — that is not an error for the run.
 	LearnedScore *float64
 	// LearnedScorePercentile is LearnedScore converted to "beats N% of the
