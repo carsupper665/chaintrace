@@ -112,7 +112,7 @@ test("keeps the route entry thin and implementation under src", async () => {
   assert.match(analysis, /graph-edge-hitarea/);
   assert.match(analysis, /graph-edge-tooltip/);
   assert.match(analysis, /direction-inbound/);
-  assert.match(analysis, /groupCenterByGroup/);
+  assert.match(analysis, /edgeHop/);
   assert.match(analysis, /ui\.isGraphFullscreen \? 13 : 6/);
   assert.match(analysis, /className="flow-in"/);
   assert.match(analysis, /isCompactGraph/);
@@ -124,7 +124,7 @@ test("keeps the route entry thin and implementation under src", async () => {
   assert.match(analysis, /hasActiveGraphFilters/);
   assert.match(analysis, /event\.key === "0"/);
   assert.match(analysis, /directionFilter/);
-  assert.match(analysis, /hiddenGraphGroups/);
+  assert.match(analysis, /hiddenGraphHops/);
   assert.match(analysis, /!isCompactGraph && dateMarkers\.map/);
   assert.doesNotMatch(analysis, /title=\{node\.address\}/);
   assert.doesNotMatch(analysis, /summarizeFlow|reduce\(\(sum, edge\)/);

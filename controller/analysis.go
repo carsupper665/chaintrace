@@ -172,7 +172,20 @@ func (h *AnalysisHandler) GetGraph(c *gin.Context) {
 		}
 		anchor = values[0]
 	}
-	page, err := analysis.LoadGraphPage(c.GetUint("user_id"), c.Param("id"), datasetIDs[0], cursor, anchor, pageSize)
+	start, startSet, startValid := graphQueryInt(c, "start")
+	end, endSet, endValid := graphQueryInt(c, "end")
+	top, topSet, topValid := graphQueryInt(c, "top")
+	skip, skipSet, skipValid := graphQueryInt(c, "skip")
+	rangeSet := startSet || endSet
+	if !startValid || !endValid || !topValid || !skipValid ||
+		(skipSet && (!topSet || skip < 0)) ||
+		(rangeSet && (!startSet || !endSet || start < 1 || start > end || end-start+1 > 200)) ||
+		(topSet && (top < 1 || top > 50)) ||
+		(rangeSet && topSet) || ((rangeSet || topSet) && (anchor == "" || cursor != "")) {
+		writeInvalidGraphQuery(c)
+		return
+	}
+	page, err := analysis.LoadGraphPage(c.GetUint("user_id"), c.Param("id"), datasetIDs[0], cursor, anchor, pageSize, start, end, top, skip)
 	if err != nil {
 		if errors.Is(err, analysis.ErrStaleDataset) {
 			c.JSON(http.StatusConflict, gin.H{"code": "stale_dataset", "message": "Analysis Dataset is no longer current"})
@@ -186,6 +199,18 @@ func (h *AnalysisHandler) GetGraph(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, page)
+}
+
+func graphQueryInt(c *gin.Context, name string) (int, bool, bool) {
+	values, exists := c.Request.URL.Query()[name]
+	if !exists {
+		return 0, false, true
+	}
+	if len(values) != 1 || values[0] == "" {
+		return 0, true, false
+	}
+	value, err := strconv.Atoi(values[0])
+	return value, true, err == nil
 }
 
 func writeInvalidGraphQuery(c *gin.Context) {

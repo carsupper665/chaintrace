@@ -133,6 +133,9 @@ func TestGraphReturnsSavedTransferEventsWithoutReanalysis(t *testing.T) {
 				t.Errorf("backend node includes visual field %q: %#v", visualField, node)
 			}
 		}
+		if count, ok := node["counterparties"].(float64); !ok || count < 1 {
+			t.Errorf("backend node counterparties = %#v, want at least 1", node["counterparties"])
+		}
 	}
 	if fixture.provider.calls.Load() != providerCalls || fixture.evaluator.calls.Load() != evaluatorCalls {
 		t.Errorf("graph GET invoked analysis: provider %d -> %d, evaluator %d -> %d", providerCalls, fixture.provider.calls.Load(), evaluatorCalls, fixture.evaluator.calls.Load())
@@ -267,6 +270,69 @@ func TestGraphAnchorPaginatesOnlySavedAdjacentRelationships(t *testing.T) {
 	}
 }
 
+func TestGraphAnchorRangeReturnsStableSliceAndHasMore(t *testing.T) {
+	fixture := newGraphHTTPFixture(t)
+	response := fixture.test.request(http.MethodGet, fixture.graphPath(
+		"&anchor="+url.QueryEscape(testPeerAddress)+"&start=2&end=2",
+	), nil, fixture.token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("range graph page = %d %s", response.Code, response.Body.String())
+	}
+	var page graphPageResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode range graph page: %v", err)
+	}
+	if len(page.Edges) != 1 || page.Edges[0].EventIdentity != "log:1" || !page.HasMore || page.NextCursor != nil {
+		t.Fatalf("range graph page = %#v", page)
+	}
+}
+
+func TestGraphAnchorTopSelectsMostFrequentCounterparty(t *testing.T) {
+	fixture := newGraphHTTPFixture(t)
+	response := fixture.test.request(http.MethodGet, fixture.graphPath(
+		"&anchor="+url.QueryEscape(testTargetAddress)+"&top=1",
+	), nil, fixture.token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("top graph page = %d %s", response.Code, response.Body.String())
+	}
+	var page graphPageResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode top graph page: %v", err)
+	}
+	if len(page.Edges) != 3 || page.HasMore || page.NextCursor != nil {
+		t.Fatalf("top graph page = %#v", page)
+	}
+	for _, edge := range page.Edges {
+		if edge.From != testPeerAddress && edge.To != testPeerAddress {
+			t.Errorf("top graph selected another counterparty: %#v", edge)
+		}
+	}
+}
+
+func TestGraphAnchorTopSkipPagesPastRankedCounterparties(t *testing.T) {
+	fixture := newGraphHTTPFixture(t)
+	for _, skip := range []string{"1", "99"} {
+		response := fixture.test.request(http.MethodGet, fixture.graphPath(
+			"&anchor="+url.QueryEscape(testTargetAddress)+"&top=1&skip="+skip,
+		), nil, fixture.token)
+		if response.Code != http.StatusOK {
+			t.Fatalf("skip=%s graph page = %d %s", skip, response.Code, response.Body.String())
+		}
+		var page graphPageResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+			t.Fatalf("decode skip=%s graph page: %v", skip, err)
+		}
+		for _, edge := range page.Edges {
+			if edge.From == testPeerAddress || edge.To == testPeerAddress {
+				t.Errorf("skip=%s returned the top-ranked counterparty again: %#v", skip, edge)
+			}
+		}
+		if skip == "99" && len(page.Edges) != 0 {
+			t.Errorf("skip past every counterparty returned %d edges", len(page.Edges))
+		}
+	}
+}
+
 func TestGraphEnforcesOwnerCurrentDatasetAndStableQueryErrors(t *testing.T) {
 	fixture := newGraphHTTPFixture(t)
 	first := fixture.test.request(http.MethodGet, fixture.graphPath("&pageSize=1"), nil, fixture.token)
@@ -286,6 +352,15 @@ func TestGraphEnforcesOwnerCurrentDatasetAndStableQueryErrors(t *testing.T) {
 		fixture.graphPath("&pageSize=not-a-number"),
 		fixture.graphPath("&anchor="),
 		fixture.graphPath("&anchor=" + strings.Repeat("a", 65)),
+		fixture.graphPath("&start=1&end=10"),
+		fixture.graphPath("&anchor=" + testPeerAddress + "&start=1"),
+		fixture.graphPath("&anchor=" + testPeerAddress + "&start=10&end=5"),
+		fixture.graphPath("&anchor=" + testPeerAddress + "&start=1&end=201"),
+		fixture.graphPath("&anchor=" + testPeerAddress + "&top=51"),
+		fixture.graphPath("&anchor=" + testPeerAddress + "&top=1&start=1&end=2"),
+		fixture.graphPath("&anchor=" + testPeerAddress + "&top=1&cursor=opaque"),
+		fixture.graphPath("&anchor=" + testPeerAddress + "&skip=1"),
+		fixture.graphPath("&anchor=" + testPeerAddress + "&top=1&skip=-1"),
 	}
 	for _, path := range invalidQueries {
 		response := fixture.test.request(http.MethodGet, path, nil, fixture.token)

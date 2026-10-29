@@ -8,7 +8,7 @@ export async function GET(request: Request, context: RouteContext) {
   const { id } = await context.params;
   const incoming = new URL(request.url).searchParams;
   const query = new URLSearchParams();
-  for (const name of ["datasetId", "cursor", "pageSize", "anchor"]) {
+  for (const name of ["datasetId", "cursor", "pageSize", "anchor", "start", "end", "top", "skip"]) {
     const value = incoming.get(name);
     if (value !== null) query.set(name, value);
   }

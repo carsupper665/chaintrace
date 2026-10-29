@@ -1949,13 +1949,14 @@ button {
 }
 
 .graph-card.graph-fullscreen {
+  --graph-fullscreen-heading-height: 88px;
   position: fixed;
   inset: 0;
   z-index: 2000;
   box-sizing: border-box;
   width: 100vw;
   height: 100vh;
-  padding-top: 72px;
+  padding-top: var(--graph-fullscreen-heading-height);
   display: grid;
   grid-template-columns: minmax(0, 1fr) 380px;
   grid-template-rows: minmax(0, 1fr);
@@ -2012,10 +2013,36 @@ button {
   right: 0;
   left: 0;
   box-sizing: border-box;
-  height: 72px;
+  height: var(--graph-fullscreen-heading-height);
   padding: 14px 18px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
+}
+
+.graph-card.graph-fullscreen > .card-heading > div:first-child {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.graph-card.graph-fullscreen > .card-heading h3,
+.graph-card.graph-fullscreen > .card-heading .graph-data-meta {
+  margin: 0;
+}
+
+.graph-card.graph-fullscreen > .card-heading .graph-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 13px;
+}
+
+.graph-card.graph-fullscreen > .card-heading .graph-counts span:last-child,
+.graph-card.graph-fullscreen > .card-heading small,
+.graph-card.graph-fullscreen > .card-heading .graph-data-meta {
+  font-size: 12px;
 }
 
 .graph-card.graph-fullscreen .node-inspector {
@@ -2457,6 +2484,18 @@ button {
   pointer-events: none;
 }
 
+.graph-edges .graph-edge-flow {
+  stroke-width: 2;
+  stroke-dasharray: 2 10;
+  pointer-events: none;
+  animation: graphEdgeFlow 1.2s linear infinite;
+}
+
+@keyframes graphEdgeFlow {
+  from { stroke-dashoffset: 12; }
+  to { stroke-dashoffset: 0; }
+}
+
 .graph-card:not(.graph-fullscreen) .graph-edges .graph-edge-arrow {
   stroke-width: 1.2;
 }
@@ -2580,6 +2619,40 @@ button {
   box-shadow: 0 0 20px rgba(117, 242, 176, 0.22);
 }
 
+.graph-node.focus::before,
+.graph-node.focus::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  animation: focusRipple 2.4s ease-out infinite;
+  pointer-events: none;
+}
+
+.graph-node.focus::after {
+  animation-delay: 1.2s;
+}
+
+@keyframes focusRipple {
+  from { opacity: 0.7; transform: scale(1); }
+  to { opacity: 0; transform: scale(2.4); }
+}
+
+.graph-focus-label {
+  position: absolute;
+  left: 50%;
+  top: -18px;
+  transform: translateX(-50%);
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #102017;
+  font-size: 7px;
+  white-space: nowrap;
+}
+
 .graph-node.selected > span {
   box-shadow:
     0 0 0 5px rgba(117, 242, 176, 0.12),
@@ -2595,7 +2668,59 @@ button {
   animation: nodeExpandPulse 900ms ease-in-out infinite;
 }
 
-.graph-node.expanded::after {
+/* Nodes that a double-click can still reveal: a slowly turning dashed ring and
+   a "+" badge, so they read differently from expanded ones at a glance. */
+.graph-node.expandable:not(.focus)::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 1.5px dashed var(--layer-color, var(--accent));
+  border-radius: 50%;
+  opacity: 0.75;
+  animation: expandableSpin 6s linear infinite;
+  pointer-events: none;
+}
+
+/* The focus node keeps its ripple pseudo-elements, so its badge hangs off the
+   inner circle instead. */
+.graph-node.focus.expandable > span {
+  position: relative;
+}
+
+.graph-node.expandable:not(.focus)::after,
+.graph-node.focus.expandable > span::after {
+  content: "+";
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 11px;
+  height: 11px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--layer-color, var(--accent));
+  color: #0b100d;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  animation: expandableBadge 1.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.graph-node.expandable:not(.focus):hover::before {
+  opacity: 1;
+  animation-duration: 2s;
+}
+
+@keyframes expandableSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes expandableBadge {
+  50% { transform: scale(1.25); }
+}
+
+.graph-node.expanded:not(.focus)::after {
   content: "";
   position: absolute;
   top: -3px;
@@ -3648,6 +3773,74 @@ button {
   background: transparent;
 }
 
+.graph-node-menu {
+  /* Above the fullscreen graph overlay (z-index 2000). */
+  z-index: 3000;
+  width: 220px;
+  transform: translateY(4px);
+}
+
+.graph-node-menu-theme {
+  display: contents;
+}
+
+.graph-node-menu fieldset {
+  margin: 8px 7px;
+  padding: 0;
+  border: 0;
+}
+
+.graph-node-menu legend {
+  margin-bottom: 5px;
+  color: #7f8d85;
+  font-size: 9px;
+}
+
+.graph-menu-depth,
+.graph-menu-range {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.graph-node-menu .graph-menu-depth button {
+  justify-content: center;
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+}
+
+.graph-node-menu .graph-menu-depth button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.graph-node-menu button.expanding {
+  animation: nodeExpandPulse 900ms ease-in-out infinite;
+}
+
+.graph-menu-range input {
+  width: 82px;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-node.focus::before,
+  .graph-node.focus::after,
+  .graph-edges .graph-edge-flow {
+    animation: none;
+  }
+
+  .graph-node.focus::before,
+  .graph-node.focus::after {
+    display: none;
+  }
+}
+
 .case-modal {
   position: relative;
   width: min(420px, 100%);
@@ -4127,6 +4320,29 @@ button {
 
 .theme-light .case-context-menu button:hover {
   background: #f3f7f4;
+}
+
+.theme-light .graph-node-menu .context-case-name,
+.theme-light .graph-node-menu legend,
+.theme-light .graph-menu-range span {
+  color: #657069;
+}
+
+.theme-light .graph-node-menu .graph-menu-depth button {
+  border-color: rgba(20, 27, 23, 0.14);
+  background: #f7f9f7;
+}
+
+.theme-light .graph-node-menu .graph-menu-depth button.active {
+  border-color: var(--accent);
+  background: #eaf6ef;
+  color: var(--accent-deep);
+}
+
+.theme-light .graph-node-menu .graph-menu-range input {
+  border-color: rgba(20, 27, 23, 0.14);
+  background: #f7f9f7;
+  color: #202622;
 }
 
 .theme-light .case-modal input {

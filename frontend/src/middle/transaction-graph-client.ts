@@ -55,6 +55,8 @@ function isNode(value: unknown): value is SavedTransactionGraphNode {
     typeof value.address === "string" &&
     value.address.length > 0 &&
     (value.type === "focus" || value.type === "normal" || value.type === "contract") &&
+    Number.isInteger(value.counterparties) &&
+    Number(value.counterparties) >= 0 &&
     !("x" in value) &&
     !("y" in value) &&
     !("group" in value)
@@ -101,7 +103,6 @@ function parseGraphPage(value: unknown): TransactionGraphPageResponse | null {
     value.datasetId.length === 0 ||
     typeof value.hasMore !== "boolean" ||
     !(value.nextCursor === null || typeof value.nextCursor === "string") ||
-    (value.hasMore && !value.nextCursor) ||
     (!value.hasMore && value.nextCursor !== null)
   ) {
     return null;
@@ -119,6 +120,10 @@ export async function getTransactionGraphPage(
   if (request.cursor) query.set("cursor", request.cursor);
   if (request.pageSize !== undefined) query.set("pageSize", String(request.pageSize));
   if (request.anchor) query.set("anchor", request.anchor);
+  if (request.start !== undefined) query.set("start", String(request.start));
+  if (request.end !== undefined) query.set("end", String(request.end));
+  if (request.top !== undefined) query.set("top", String(request.top));
+  if (request.skip !== undefined) query.set("skip", String(request.skip));
 
   const response = await fetchImpl(
     `${transactionGraphApiPath(investigationId)}?${query}`,

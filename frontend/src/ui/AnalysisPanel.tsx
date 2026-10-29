@@ -94,9 +94,17 @@ export function AnalysisPanel({
 }) {
   const [selectedDate, setSelectedDate] = useState("");
   const [isCompactGraph, setIsCompactGraph] = useState(false);
-  const [hiddenGraphGroups, setHiddenGraphGroups] = useState<Set<number>>(
+  const [hiddenGraphHops, setHiddenGraphHops] = useState<Set<number>>(
     () => new Set(),
   );
+  const [nodeMenu, setNodeMenu] = useState<{
+    nodeId: string;
+    x: number;
+    y: number;
+    start: number;
+    end: number;
+    depth: number;
+  } | null>(null);
   const [directionFilter, setDirectionFilter] = useState<
     "all" | "inbound" | "outbound"
   >("all");
@@ -157,7 +165,7 @@ export function AnalysisPanel({
     window.queueMicrotask(() => {
       if (cancelled) return;
       setSelectedDate("");
-      setHiddenGraphGroups(new Set());
+      setHiddenGraphHops(new Set());
       setDirectionFilter("all");
     });
     return () => {
@@ -176,6 +184,20 @@ export function AnalysisPanel({
     },
     [],
   );
+  useEffect(() => {
+    if (!nodeMenu) return;
+    const close = (event: KeyboardEvent | MouseEvent) => {
+      if (event instanceof KeyboardEvent && event.key !== "Escape") return;
+      if (event instanceof MouseEvent && (event.target as HTMLElement).closest(".graph-node-menu")) return;
+      setNodeMenu(null);
+    };
+    window.addEventListener("keydown", close);
+    window.addEventListener("mousedown", close);
+    return () => {
+      window.removeEventListener("keydown", close);
+      window.removeEventListener("mousedown", close);
+    };
+  }, [nodeMenu]);
   const transactionDates = [
     ...new Set(
       graphEdges
@@ -209,11 +231,22 @@ export function AnalysisPanel({
     "#e95b72",
     "#1fb6b2",
   ];
-  const layerColor = (group = 0) =>
-    layerColors[group % layerColors.length];
-  const graphGroups = [...new Set(graphNodes.map((node) => node.group ?? 0))]
+  const layerColor = (hop = 0) => layerColors[hop % layerColors.length];
+  const graphHops = [...new Set(graphNodes.map((node) => node.hop ?? 0))]
     .sort((a, b) => a - b);
   const nodeById = new Map(graphNodes.map((node) => [node.id, node]));
+  // A node is worth expanding only while the Dataset holds counterparties the
+  // graph does not show yet; one at the edge of the trace has none left.
+  const shownCounterparties = new Map<string, Set<string>>();
+  for (const edge of graphEdges) {
+    for (const [self, other] of [[edge.from, edge.to], [edge.to, edge.from]]) {
+      const set = shownCounterparties.get(self) ?? new Set<string>();
+      set.add(other);
+      shownCounterparties.set(self, set);
+    }
+  }
+  const hasHiddenCounterparties = (node: (typeof graphNodes)[number]) =>
+    (shownCounterparties.get(node.id)?.size ?? 0) < node.counterparties;
   const investigationAddress = ui.transactionGraph?.address.toLowerCase();
   const investigationNodeId =
     graphNodes.find(
@@ -223,44 +256,28 @@ export function AnalysisPanel({
     )?.id ??
     graphNodes.find((node) => node.type === "focus")?.id ??
     null;
-  const groupCenterByGroup = new Map<number, string>();
-  if (investigationNodeId) groupCenterByGroup.set(0, investigationNodeId);
-  for (const group of graphGroups.filter((value) => value > 0)) {
-    const centerCandidates = new Map<string, number>();
-    for (const edge of graphEdges.filter(
-      (candidate) => (candidate.group ?? 0) === group,
-    )) {
-      for (const nodeId of [edge.from, edge.to]) {
-        const node = nodeById.get(nodeId);
-        if (node && (node.group ?? 0) < group) {
-          centerCandidates.set(
-            nodeId,
-            (centerCandidates.get(nodeId) ?? 0) + 1,
-          );
-        }
-      }
-    }
-    const centerId = [...centerCandidates.entries()].sort(
-      (left, right) => right[1] - left[1],
-    )[0]?.[0];
-    if (centerId) groupCenterByGroup.set(group, centerId);
-  }
+  const edgeHop = (edge: TransactionGraphEdge) => Math.max(
+    nodeById.get(edge.from)?.hop ?? 0,
+    nodeById.get(edge.to)?.hop ?? 0,
+  );
   const edgeDirection = (edge: TransactionGraphEdge) => {
-    const centerId =
-      groupCenterByGroup.get(edge.group ?? 0) ?? investigationNodeId;
-    if (edge.to === centerId) return "inbound";
-    if (edge.from === centerId) return "outbound";
+    const fromHop = nodeById.get(edge.from)?.hop ?? 0;
+    const toHop = nodeById.get(edge.to)?.hop ?? 0;
+    if (toHop < fromHop) return "inbound";
+    if (fromHop < toHop) return "outbound";
+    if (edge.to === investigationNodeId) return "inbound";
+    if (edge.from === investigationNodeId) return "outbound";
     return "neutral";
   };
   const visibleGraphEdges = graphEdges.filter((edge) => {
-    if (hiddenGraphGroups.has(edge.group ?? 0)) return false;
+    if (hiddenGraphHops.has(edgeHop(edge))) return false;
     if (directionFilter === "all") return true;
     return edgeDirection(edge) === directionFilter;
   });
   const visibleEdgeIds = new Set(visibleGraphEdges.map((edge) => edge.id));
   const hasActiveGraphFilters =
     directionFilter !== "all" ||
-    hiddenGraphGroups.size > 0 ||
+    hiddenGraphHops.size > 0 ||
     Boolean(selectedDate) ||
     isCompactGraph;
   const visibleNodeIds = new Set<string>();
@@ -441,6 +458,87 @@ export function AnalysisPanel({
           document.body,
         )
       : null;
+  const menuNode = nodeMenu
+    ? graphNodes.find((node) => node.id === nodeMenu.nodeId) ?? null
+    : null;
+  const rangeValid = Boolean(
+    nodeMenu &&
+      Number.isInteger(nodeMenu.start) &&
+      Number.isInteger(nodeMenu.end) &&
+      nodeMenu.start >= 1 &&
+      nodeMenu.end >= nodeMenu.start &&
+      nodeMenu.end - nodeMenu.start + 1 <= 200,
+  );
+  const nodeMenuPortal = nodeMenu && menuNode && typeof document !== "undefined"
+    ? createPortal(
+        <div className={`graph-node-menu-theme ${ui.isLightMode ? "theme-light" : "theme-dark"}`}>
+          <div
+            className="case-context-menu graph-node-menu"
+            style={{ left: nodeMenu.x, top: nodeMenu.y }}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <div className="context-case-name">{menuNode.address}</div>
+            {menuNode.type !== "focus" && (
+              <fieldset>
+                <legend>往後層數</legend>
+                <div className="graph-menu-depth">
+                  {[1, 2, 3].map((depth) => (
+                    <button
+                      type="button"
+                      key={depth}
+                      className={nodeMenu.depth === depth ? "active" : ""}
+                      onClick={() => setNodeMenu((current) => current ? { ...current, depth } : null)}
+                    >
+                      {depth}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+            <fieldset>
+              <legend>範圍（最多 200 筆）</legend>
+              <div className="graph-menu-range">
+                <input
+                  type="number"
+                  min="1"
+                  value={nodeMenu.start}
+                  aria-label="範圍起始筆數"
+                  onChange={(event) => setNodeMenu((current) => current ? { ...current, start: Number(event.target.value) } : null)}
+                />
+                <span>–</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={nodeMenu.end}
+                  aria-label="範圍結束筆數"
+                  onChange={(event) => setNodeMenu((current) => current ? { ...current, end: Number(event.target.value) } : null)}
+                />
+              </div>
+            </fieldset>
+            <button
+              type="button"
+              className={ui.expandingNodeId === nodeMenu.nodeId ? "expanding" : ""}
+              disabled={!rangeValid || Boolean(ui.expandingNodeId)}
+              onClick={async () => {
+                await ui.expandGraphNodeRange(nodeMenu.nodeId, {
+                  start: nodeMenu.start,
+                  end: nodeMenu.end,
+                  depth: menuNode.type === "focus" ? 1 : nodeMenu.depth,
+                });
+                setNodeMenu(null);
+              }}
+            >
+              <span>{ui.expandingNodeId === nodeMenu.nodeId ? "…" : "↗"}</span>
+              {ui.expandingNodeId === nodeMenu.nodeId ? "渲染中…" : "渲染"}
+            </button>
+            <button type="button" onClick={() => void copyNodeAddress(menuNode.address)}>
+              <span>⧉</span>複製地址
+            </button>
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
 
   return (
     <>
@@ -678,22 +776,22 @@ export function AnalysisPanel({
             </div>
             <div className="graph-filter-group layer-filter-group">
               <span>圖層</span>
-              {graphGroups.map((group) => (
+              {graphHops.map((hop) => (
                 <button
                   type="button"
-                  key={group}
-                  className={!hiddenGraphGroups.has(group) ? "active" : ""}
+                  key={hop}
+                  className={!hiddenGraphHops.has(hop) ? "active" : ""}
                   onClick={() =>
-                    setHiddenGraphGroups((current) => {
+                    setHiddenGraphHops((current) => {
                       const next = new Set(current);
-                      if (next.has(group)) next.delete(group);
-                      else next.add(group);
+                      if (next.has(hop)) next.delete(hop);
+                      else next.add(hop);
                       return next;
                     })
                   }
-                  aria-pressed={!hiddenGraphGroups.has(group)}
+                  aria-pressed={!hiddenGraphHops.has(hop)}
                 >
-                  {String.fromCharCode(65 + Math.min(group, 25))}
+                  第 {hop} 層
                 </button>
               ))}
             </div>
@@ -730,7 +828,7 @@ export function AnalysisPanel({
               className="graph-clear-filter"
               onClick={() => {
                 setDirectionFilter("all");
-                setHiddenGraphGroups(new Set());
+                setHiddenGraphHops(new Set());
                 setSelectedDate("");
                 setIsCompactGraph(false);
               }}
@@ -764,6 +862,7 @@ export function AnalysisPanel({
               ui.resetGraphView();
             }
           }}
+          onWheel={() => setNodeMenu(null)}
           onPointerDown={(event) => {
             if (
               (event.target as HTMLElement).closest(
@@ -899,15 +998,8 @@ export function AnalysisPanel({
                   matchingEdges && !matchingEdges.has(edge.id)
                     ? "date-muted"
                     : "date-matched";
-                const groupCenterId =
-                  groupCenterByGroup.get(edge.group ?? 0) ??
-                  investigationNodeId;
-                const directionClass =
-                  edge.to === groupCenterId
-                    ? "direction-inbound"
-                    : edge.from === groupCenterId
-                      ? "direction-outbound"
-                      : "direction-neutral";
+                const directionClass = `direction-${edgeDirection(edge)}`;
+                const hop = edgeHop(edge);
                 return (
                   <React.Fragment key={edge.id}>
                   <line
@@ -917,7 +1009,7 @@ export function AnalysisPanel({
                     x2={b.x}
                     y2={b.y}
                     vectorEffect="non-scaling-stroke"
-                    style={{ stroke: layerColor(edge.group) }}
+                    style={{ stroke: layerColor(hop) }}
                   >
                     <title>
                       {edge.timestamp?.slice(0, 10) || "日期未知"} ·{" "}
@@ -931,9 +1023,20 @@ export function AnalysisPanel({
                     x2={arrowEnd.x}
                     y2={arrowEnd.y}
                     vectorEffect="non-scaling-stroke"
-                    style={{ stroke: layerColor(edge.group) }}
-                    markerEnd={`url(#graph-arrow-${(edge.group ?? 0) % layerColors.length})`}
+                    style={{ stroke: layerColor(hop) }}
+                    markerEnd={`url(#graph-arrow-${hop % layerColors.length})`}
                   />
+                  {visibleGraphEdges.length <= 250 && (
+                    <line
+                      className="graph-edge-flow"
+                      x1={a.x}
+                      y1={a.y}
+                      x2={b.x}
+                      y2={b.y}
+                      vectorEffect="non-scaling-stroke"
+                      style={{ stroke: layerColor(hop) }}
+                    />
+                  )}
                   <line
                     className="graph-edge-hitarea"
                     x1={a.x}
@@ -992,7 +1095,7 @@ export function AnalysisPanel({
                   style={{
                     left: `${x}%`,
                     top: `${y}%`,
-                    borderColor: layerColor(edge.group),
+                    borderColor: layerColor(edgeHop(edge)),
                   }}
                 >
                   {dateLabel}
@@ -1005,7 +1108,11 @@ export function AnalysisPanel({
                 className={`graph-node ${node.type} ${
                   ui.selectedNodeId === node.id ? "selected" : ""
                 } ${ui.expandingNodeId === node.id ? "expanding" : ""} ${
-                  ui.expandedNodeIds.has(node.id) ? "expanded" : ""
+                  hasHiddenCounterparties(node)
+                    ? "expandable"
+                    : ui.expandedNodeIds.has(node.id)
+                      ? "expanded"
+                      : ""
                 } ${
                   matchingNodes && !matchingNodes.has(node.id)
                     ? "date-muted"
@@ -1015,13 +1122,25 @@ export function AnalysisPanel({
                   {
                     left: `${node.x}%`,
                     top: `${node.y}%`,
-                    "--layer-color": layerColor(node.group),
+                    "--layer-color": layerColor(node.hop),
                   } as React.CSSProperties
                 }
                 role="button"
                 tabIndex={0}
                 aria-label={`選取並查看節點 ${node.address}`}
-                title="單擊查看資料，雙擊揭露 Dataset 內的交易關係"
+                title="單擊查看資料，雙擊揭露 Dataset 內的交易關係；右鍵可選層數與範圍"
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setNodeMenu({
+                    nodeId: node.id,
+                    x: Math.min(event.clientX, window.innerWidth - 260),
+                    y: Math.min(event.clientY, window.innerHeight - 280),
+                    start: 1,
+                    end: 10,
+                    depth: 1,
+                  });
+                }}
                 onPointerEnter={(event) => {
                   if (!ui.isGraphFullscreen || nodeDrag.current) return;
                   const canvas = graphCanvasRef.current;
@@ -1109,6 +1228,7 @@ export function AnalysisPanel({
               >
                 <span>{node.type === "focus" ? "◎" : node.type === "contract" ? "C" : "•"}</span>
                 <small>{node.label}</small>
+                {node.type === "focus" && <b className="graph-focus-label">調查目標</b>}
               </div>
             ))}
             {hoveredEdge && (
@@ -1153,12 +1273,10 @@ export function AnalysisPanel({
           )}
           {ui.transactionGraph && (
             <div className="graph-layer-legend">
-              {graphGroups.map((group) => (
-                <span key={group}>
-                  <i style={{ background: layerColor(group) }} />
-                  {group === 0
-                    ? "A 起始交易"
-                    : `${String.fromCharCode(65 + Math.min(group, 25))} 第 ${group} 次展開`}
+              {graphHops.map((hop) => (
+                <span key={hop}>
+                  <i style={{ background: layerColor(hop) }} />
+                  第 {hop} 層
                 </span>
               ))}
               <span className="graph-direction-key">
@@ -1234,6 +1352,9 @@ export function AnalysisPanel({
                         : "展開此節點的交易關係"}
                       <span>↗</span>
                     </button>
+                  )}
+                  {ui.expansionError && (
+                    <div className="node-expansion-error">{ui.expansionError}</div>
                   )}
                   <div className="dock-stat-grid">
                     <div>
@@ -1334,7 +1455,7 @@ export function AnalysisPanel({
                   ? "展開中…"
                   : ui.expandedNodeIds.has(selectedNode.id)
                     ? "已展開"
-                    : "點擊展開"}
+                    : "雙擊節點展開"}
               </span>
             </div>
                 <button
@@ -1508,6 +1629,7 @@ export function AnalysisPanel({
           </section>
     </aside>
     {copyFeedbackToast}
+    {nodeMenuPortal}
     </>
   );
 }

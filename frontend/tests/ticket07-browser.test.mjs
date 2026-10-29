@@ -49,8 +49,8 @@ function page(overrides = {}) {
   return {
     datasetId: "dataset-07",
     nodes: [
-      { id: "focus", address: "TFocus", type: "focus" },
-      { id: "peer-a", address: "TPeerA", type: "normal" },
+      { id: "focus", address: "TFocus", type: "focus", counterparties: 1 },
+      { id: "peer-a", address: "TPeerA", type: "normal", counterparties: 1 },
     ],
     edges: [edge("event-1", "log-0")],
     nextCursor: "page/2",
@@ -67,12 +67,12 @@ test("browser loads cursor pages, owns deterministic layout, dedupes IDs, and pr
   const fetchImpl = async (input) => {
     const url = new URL(String(input), "http://browser.test");
     calls.push(url);
-    if (url.searchParams.get("cursor") === "page/2") {
+    if (!url.searchParams.get("top")) {
       return Response.json(
         page({
           nodes: [
-            { id: "peer-a", address: "TPeerA", type: "normal" },
-            { id: "peer-b", address: "TPeerB", type: "contract" },
+            { id: "peer-a", address: "TPeerA", type: "normal", counterparties: 1 },
+            { id: "peer-b", address: "TPeerB", type: "contract", counterparties: 1 },
           ],
           edges: [
             edge("event-1", "log-0"),
@@ -83,7 +83,7 @@ test("browser loads cursor pages, owns deterministic layout, dedupes IDs, and pr
         }),
       );
     }
-    return Response.json(page());
+    return Response.json(page({ nextCursor: null, hasMore: false }));
   };
   const browser = createTransactionGraphBrowser(fetchImpl, 2);
 
@@ -92,13 +92,16 @@ test("browser loads cursor pages, owns deterministic layout, dedupes IDs, and pr
   assert.deepEqual(calls[0].searchParams.entries().toArray(), [
     ["datasetId", "dataset-07"],
     ["pageSize", "2"],
+    ["anchor", "TFocus"],
+    ["top", "10"],
   ]);
   assert.deepEqual(firstPositions[0], { id: "focus", x: 50, y: 50, group: 0 });
   assert.ok(firstPositions.every((node) => Number.isFinite(node.x) && Number.isFinite(node.y)));
   assert.ok(first.nodes.every((node) => "group" in node));
 
   const merged = await browser.loadMore();
-  assert.equal(calls[1].searchParams.get("cursor"), "page/2");
+  assert.equal(calls[1].searchParams.get("cursor"), null);
+  assert.equal(calls[1].searchParams.get("anchor"), "TFocus");
   assert.equal(merged.nodes.length, 3);
   assert.equal(merged.edges.length, 2);
   assert.equal(merged.edges[0].transactionHash, merged.edges[1].transactionHash);
@@ -127,12 +130,12 @@ test("browser anchor expansion merges only same-Dataset relationships through th
   const fetchImpl = async (input) => {
     const url = new URL(String(input), "http://browser.test");
     ledger.push(url);
-    if (url.searchParams.get("anchor")) {
+    if (url.searchParams.get("anchor") === "peer-a") {
       return Response.json(
         page({
           nodes: [
-            { id: "peer-a", address: "TPeerA", type: "normal" },
-            { id: "peer-c", address: "TPeerC", type: "normal" },
+            { id: "peer-a", address: "TPeerA", type: "normal", counterparties: 1 },
+            { id: "peer-c", address: "TPeerC", type: "normal", counterparties: 1 },
           ],
           edges: [edge("event-3", "log-2", "peer-a", "peer-c")],
           nextCursor: null,
@@ -145,10 +148,11 @@ test("browser anchor expansion merges only same-Dataset relationships through th
   const browser = createTransactionGraphBrowser(fetchImpl, 100);
   await browser.load(context());
 
-  const expanded = await browser.expand("peer-a");
+  const { graph: expanded, revealed } = await browser.expand("peer-a");
 
   assert.equal(ledger[1].searchParams.get("datasetId"), "dataset-07");
   assert.equal(ledger[1].searchParams.get("anchor"), "peer-a");
+  assert.equal(ledger[1].searchParams.get("top"), "10");
   assert.ok(ledger.every((url) => url.pathname === "/api/investigations/inv-07/graph"));
   assert.ok(
     ledger.every(
@@ -158,8 +162,104 @@ test("browser anchor expansion merges only same-Dataset relationships through th
   assert.equal(expanded.nodes.length, 3);
   assert.equal(expanded.edges.length, 2);
   assert.equal(expanded.nodes.find((node) => node.id === "peer-c").group, 1);
+  assert.equal(expanded.nodes.find((node) => node.id === "peer-c").hop, 2);
+  assert.equal(expanded.nodes.find((node) => node.id === "peer-c").parentId, "peer-a");
+  assert.ok(Math.hypot(
+    expanded.nodes.find((node) => node.id === "peer-c").x - expanded.nodes.find((node) => node.id === "peer-a").x,
+    expanded.nodes.find((node) => node.id === "peer-c").y - expanded.nodes.find((node) => node.id === "peer-a").y,
+  ) <= 14.1);
   assert.equal(expanded.edges.find((item) => item.id === "event-3").group, 1);
   assert.equal(expanded.transactionCount, 42);
+  assert.equal(revealed, 1);
+});
+
+test("browser range expansion reveals each new frontier through depth two", async () => {
+  const { createTransactionGraphBrowser } = await import(
+    "../src/services/transactionGraphBrowser.ts"
+  );
+  const rangeAnchors = [];
+  const fetchImpl = async (input) => {
+    const url = new URL(String(input), "http://browser.test");
+    const anchor = url.searchParams.get("anchor");
+    if (url.searchParams.get("top")) {
+      return Response.json(page({ nextCursor: null, hasMore: false }));
+    }
+    rangeAnchors.push(anchor);
+    const next = anchor === "peer-a" ? "peer-c" : "peer-d";
+    return Response.json(
+      page({
+        nodes: [
+          { id: anchor, address: `T${anchor}`, type: "normal", counterparties: 1 },
+          { id: next, address: `T${next}`, type: "normal", counterparties: 1 },
+        ],
+        edges: [edge(`event-${next}`, `log-${next}`, anchor, next)],
+        nextCursor: null,
+        hasMore: false,
+      }),
+    );
+  };
+  const browser = createTransactionGraphBrowser(fetchImpl, 100);
+  await browser.load(context());
+
+  const expansion = await browser.expandRange("peer-a", { start: 5, end: 20, depth: 2 });
+
+  assert.deepEqual(rangeAnchors, ["peer-a", "peer-c"]);
+  assert.equal(expansion.revealed, 2);
+  assert.equal(expansion.graph.nodes.find((node) => node.id === "peer-d").hop, 3);
+});
+
+test("browser double-click keeps revealing the next counterparty batch until none remain", async () => {
+  const { createTransactionGraphBrowser } = await import(
+    "../src/services/transactionGraphBrowser.ts"
+  );
+  const skips = [];
+  const fetchImpl = async (input) => {
+    const url = new URL(String(input), "http://browser.test");
+    if (url.searchParams.get("anchor") !== "peer-a") {
+      return Response.json(page({
+        nodes: [
+          { id: "focus", address: "TFocus", type: "focus", counterparties: 1 },
+          { id: "peer-a", address: "TPeerA", type: "normal", counterparties: 25 },
+        ],
+        nextCursor: null,
+        hasMore: false,
+      }));
+    }
+    const skip = Number(url.searchParams.get("skip"));
+    skips.push(skip);
+    const count = Math.min(10, 25 - skip);
+    const peers = Array.from({ length: count }, (_, index) => `batch-${skip + index}`);
+    return Response.json(page({
+      nodes: [
+        { id: "peer-a", address: "TPeerA", type: "normal", counterparties: 25 },
+        ...peers.map((id) => ({ id, address: `T${id}`, type: "normal", counterparties: 1 })),
+      ],
+      edges: peers.map((id) => edge(`event-${id}`, "log-0", "peer-a", id)),
+      nextCursor: null,
+      hasMore: false,
+    }));
+  };
+  const browser = createTransactionGraphBrowser(fetchImpl, 100);
+  await browser.load(context());
+
+  const first = await browser.expand("peer-a");
+  const second = await browser.expand("peer-a");
+  const third = await browser.expand("peer-a");
+  const fourth = await browser.expand("peer-a");
+
+  assert.deepEqual(skips, [0, 10, 20]);
+  assert.deepEqual(
+    [first, second, third].map(({ revealed, hasMore }) => ({ revealed, hasMore })),
+    [
+      { revealed: 10, hasMore: true },
+      { revealed: 10, hasMore: true },
+      { revealed: 5, hasMore: false },
+    ],
+  );
+  assert.equal(fourth.revealed, 0);
+  assert.equal(third.graph.nodes.length, 27);
+  const positions = new Set(third.graph.nodes.map((node) => `${node.x},${node.y}`));
+  assert.equal(positions.size, third.graph.nodes.length);
 });
 
 test("switching Dataset aborts and discards a stale graph response while clearing view state", async () => {
@@ -181,7 +281,7 @@ test("switching Dataset aborts and discards a stale graph response while clearin
     return Response.json(
       page({
         datasetId: "dataset-new",
-        nodes: [{ id: "new-focus", address: "TNew", type: "focus" }],
+        nodes: [{ id: "new-focus", address: "TNew", type: "focus", counterparties: 1 }],
         edges: [],
         nextCursor: null,
         hasMore: false,
@@ -198,7 +298,7 @@ test("switching Dataset aborts and discards a stale graph response while clearin
     Response.json(
       page({
         datasetId: "dataset-old",
-        nodes: [{ id: "old-focus", address: "TOld", type: "focus" }],
+        nodes: [{ id: "old-focus", address: "TOld", type: "focus", counterparties: 1 }],
         edges: [],
         nextCursor: null,
         hasMore: false,
@@ -210,7 +310,7 @@ test("switching Dataset aborts and discards a stale graph response while clearin
   assert.equal(oldSignal.aborted, true);
   assert.equal(current.datasetId, "dataset-new");
   assert.equal(browser.getGraph().datasetId, "dataset-new");
-  assert.deepEqual(browser.getGraph().nodes.map((node) => node.id), ["new-focus"]);
+  assert.deepEqual(browser.getGraph().nodes.map((node) => node.id), ["TFocus", "new-focus"]);
 });
 
 test("graph rendering displays exact BigInt amounts and separates Dataset totals from visible counts", async () => {

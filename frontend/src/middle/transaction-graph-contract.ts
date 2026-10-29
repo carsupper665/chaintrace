@@ -8,6 +8,8 @@ export type SavedTransactionGraphNode = {
   id: string;
   address: string;
   type: TransactionGraphNodeType;
+  // Distinct addresses this node transfers with in the whole Dataset.
+  counterparties: number;
 };
 
 export type SavedTransactionGraphEdge = {
@@ -33,6 +35,10 @@ export type TransactionGraphPageRequest = {
   cursor?: string;
   pageSize?: number;
   anchor?: string;
+  start?: number;
+  end?: number;
+  top?: number;
+  skip?: number;
 };
 
 export type TransactionGraphNode = SavedTransactionGraphNode & {
@@ -40,6 +46,8 @@ export type TransactionGraphNode = SavedTransactionGraphNode & {
   x: number;
   y: number;
   group: number;
+  hop: number;
+  parentId: string | null;
 };
 
 export type TransactionGraphEdge = SavedTransactionGraphEdge & {
@@ -60,6 +68,9 @@ export type TransactionGraphResponse = {
   flowAsset: string;
   source: string;
   updatedAt: string;
+  // How many ranked counterparties each node's double-click has requested so
+  // far. Kept on the graph so undo rewinds it together with the nodes.
+  expandRanks: Record<string, number>;
 };
 
 export const transactionGraphApiPath = (investigationId: string) =>

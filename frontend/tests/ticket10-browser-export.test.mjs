@@ -71,11 +71,12 @@ function graphPage(overrides = {}) {
   return {
     datasetId: "dataset-10",
     nodes: [
-      { id: targetAddress, address: targetAddress, type: "focus" },
+      { id: targetAddress, address: targetAddress, type: "focus", counterparties: 1 },
       {
         id: "TPeer11111111111111111111111111111",
         address: "TPeer11111111111111111111111111111",
         type: "normal",
+        counterparties: 1,
       },
     ],
     edges: [],

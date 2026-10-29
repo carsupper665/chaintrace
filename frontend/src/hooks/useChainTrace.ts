@@ -1152,6 +1152,30 @@ export function useChainTrace() {
     await runInvestigation(text);
   }
 
+  function selectGraphNode(nodeId: string | null) {
+    setSelectedNodeId(nodeId);
+    setExpansionError("");
+  }
+
+  function applyExpansion(
+    previous: NonNullable<typeof transactionGraph>,
+    expanded: NonNullable<typeof transactionGraph>,
+    nodeId: string,
+    exhausted: boolean,
+  ) {
+    graphHistory.current.push({
+      graph: previous,
+      spread: graphSpread,
+      offset: graphOffset,
+      expandedNodeIds: new Set(expandedNodeIds),
+    });
+    setTransactionGraph(expanded);
+    // A node stays expandable until every counterparty it has is revealed.
+    if (exhausted) setExpandedNodeIds((current) => new Set(current).add(nodeId));
+    setGraphHistoryDepth(graphHistory.current.length);
+    setGraphSpread((current) => Math.min(2.4, current + 0.18));
+  }
+
   async function expandGraphNode(nodeId: string) {
     if (!transactionGraph || expandingNodeId || expandedNodeIds.has(nodeId)) {
       return;
@@ -1161,18 +1185,44 @@ export function useChainTrace() {
     setExpansionError("");
     const previous = transactionGraph;
     try {
-      const expanded = await graphBrowser.expand(nodeId);
-      if (!expanded || expanded.datasetId !== previous.datasetId) return;
-      graphHistory.current.push({
-        graph: previous,
-        spread: graphSpread,
-        offset: graphOffset,
-        expandedNodeIds: new Set(expandedNodeIds),
-      });
-      setTransactionGraph(expanded);
-      setExpandedNodeIds((current) => new Set(current).add(nodeId));
-      setGraphHistoryDepth(graphHistory.current.length);
-      setGraphSpread((current) => Math.min(2.4, current + 0.18));
+      const expansion = await graphBrowser.expand(nodeId);
+      if (!expansion || expansion.graph.datasetId !== previous.datasetId) return;
+      if (expansion.revealed === 0) {
+        setExpandedNodeIds((current) => new Set(current).add(nodeId));
+        setExpansionError(
+          "此節點在本次分析資料集內的交易對手都已顯示。若需要更多層級，請加深追蹤深度後重新分析。",
+        );
+        return;
+      }
+      applyExpansion(previous, expansion.graph, nodeId, !expansion.hasMore);
+    } catch (error) {
+      setExpansionError(
+        error instanceof TransactionGraphClientError
+          ? error.message
+          : "無法展開此節點的交易關係，請稍後再試。",
+      );
+    } finally {
+      setExpandingNodeId(null);
+    }
+  }
+
+  async function expandGraphNodeRange(
+    nodeId: string,
+    options: { start: number; end: number; depth: number },
+  ) {
+    if (!transactionGraph || expandingNodeId) return;
+    setSelectedNodeId(nodeId);
+    setExpandingNodeId(nodeId);
+    setExpansionError("");
+    const previous = transactionGraph;
+    try {
+      const expansion = await graphBrowser.expandRange(nodeId, options);
+      if (!expansion || expansion.graph.datasetId !== previous.datasetId) return;
+      if (expansion.revealed > 0) {
+        applyExpansion(previous, expansion.graph, nodeId, false);
+      } else {
+        setExpansionError("此範圍在本次分析資料集內沒有其他交易關係。");
+      }
     } catch (error) {
       setExpansionError(
         error instanceof TransactionGraphClientError
@@ -1927,6 +1977,7 @@ export function useChainTrace() {
     exportTransactionsCsv,
     exportAnalysisPdf,
     expandGraphNode,
+    expandGraphNodeRange,
     leaveAnalysis,
     leaveSidebar,
     loadMoreConversation,
@@ -1954,7 +2005,7 @@ export function useChainTrace() {
     setRenameTarget,
     setRenameValue,
     setSearch,
-    setSelectedNodeId,
+    setSelectedNodeId: selectGraphNode,
     toggleAnalysisPin,
     toggleGraphFullscreen,
     toggleSidebarPin,

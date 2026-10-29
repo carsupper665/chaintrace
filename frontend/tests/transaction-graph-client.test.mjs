@@ -11,8 +11,8 @@ function graphPage(overrides = {}) {
   return {
     datasetId: "dataset-07",
     nodes: [
-      { id: "node-focus", address: "TFocus", type: "focus" },
-      { id: "node-peer", address: "TPeer", type: "normal" },
+      { id: "node-focus", address: "TFocus", type: "focus", counterparties: 1 },
+      { id: "node-peer", address: "TPeer", type: "normal", counterparties: 1 },
     ],
     edges: [
       {

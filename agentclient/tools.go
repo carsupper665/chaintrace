@@ -81,7 +81,7 @@ func (r toolRunner) execute(scope turnScope, call ToolCall) ToolResult {
 	case ToolExpandNode:
 		return withAddress(scope, call, func(address string) ToolResult {
 			page, err := analysis.LoadGraphPage(
-				scope.ownerID, scope.investigationID, scope.datasetID, "", address, r.options.ToolMaxRows,
+				scope.ownerID, scope.investigationID, scope.datasetID, "", address, r.options.ToolMaxRows, 0, 0, 0, 0,
 			)
 			if err != nil {
 				return failure(call, codeLookupFailed, "無法展開這個節點")
